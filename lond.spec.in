@@ -1,0 +1,58 @@
+# LOND specfile
+
+# RHEL >= 7 comes with systemd
+%if 0%{?rhel} >= 7
+%define with_systemd 1
+%endif
+
+Name: @PACKAGE@
+Version: @VERSION@
+
+Vendor: DataDirect Networks Inc.
+Prefix: %{_prefix}
+
+Release: @LOND_RELEASE@%{?dist}
+
+Summary: LOND - Lustre On Demand
+License: GPLv2
+Group: Applications/System
+Source0: @PACKAGE@-%{version}.tar.gz
+BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
+Requires: lustre
+
+%description
+LOND(Lustre on Demand) is a tool chain to create on demand Lustre.
+
+%prep
+%setup -q -n @PACKAGE@-%{version}
+
+%build
+./configure @ac_configure_args@ %{?configure_flags:configure_flags} \
+	--sysconfdir=%{_sysconfdir} \
+	--mandir=%{_mandir} \
+	--libdir=%{_libdir} \
+	--includedir=%{_includedir} \
+	--prefix=%{_prefix}
+make
+make check
+
+%install
+rm -rf $RPM_BUILD_ROOT
+make install DESTDIR=$RPM_BUILD_ROOT
+mkdir -p $RPM_BUILD_ROOT%{_bindir}
+cp	\
+	src/lond \
+	src/lond_copytool \
+	$RPM_BUILD_ROOT%{_bindir}
+
+%clean
+rm -rf $RPM_BUILD_ROOT
+
+%files
+%defattr(-,root,root)
+%{_bindir}/lond
+%{_bindir}/lond_copytool
+
+%changelog
+* Wed Apr 3 2019 Li Xi <lixi@ddn.com> 0.1
+- Initial version
