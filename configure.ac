@@ -1,6 +1,6 @@
 dnl Process this file with autoconf to produce a configure script.
 AC_INIT([lond], [m4_esyscmd(./version-gen.sh)], [lixi@ddn.com], [lond])
-AC_CONFIG_SRCDIR(./src/lond.c)
+AC_CONFIG_SRCDIR(./src/lond_fetch.c)
 AC_CONFIG_HEADERS(config.h)
 
 AM_INIT_AUTOMAKE([tar-pax dist-bzip2 foreign])
@@ -146,5 +146,6 @@ AC_SUBST(LOND_RELEASE)
 AC_SUBST(ac_configure_args)
 AC_CONFIG_FILES([Makefile
                  lond.spec
-                 src/Makefile])
+                 src/Makefile
+                 pylond/Makefile])
 AC_OUTPUT

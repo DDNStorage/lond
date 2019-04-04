@@ -1,4 +1,4 @@
-SUBDIRS = src .
+SUBDIRS = src pylond .
 
 build_dir = `pwd`/build
 rpmbuild_opt =
@@ -6,11 +6,24 @@ rpmbuild_opt =
 AUTOMAKE_OPTIONS = -Wall foreign
 ACLOCAL_AMFLAGS = ${ALOCAL_FLAGS}
 
-EXTRA_DIST= \
+PYTHON_COMMANDS = \
+	lond
+
+EXTRA_DIST = \
+	$(PYTHON_COMMANDS) \
 	detect-distro.sh \
 	lond.spec \
 	lond.spec.in \
-	c_check.pl
+	c_check.pl \
+	pylond/*.py \
+	.pylintrc
+
+CHECKS = $(PYTHON_COMMANDS:%=%.python_checked)
+
+%.python_checked: % .pylintrc
+	PYLINTRC=.pylintrc pylint --disable=I $<
+	pep8 --ignore=E501 $<
+	touch $@
 
 check_clean-local:
 	rm -f $(CHECKS)
