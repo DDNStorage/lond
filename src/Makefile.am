@@ -5,9 +5,17 @@ AM_CFLAGS = -Wall -Werror -g $(json_c_CFLAGS) $(json_c_LIBS) \
 	-llustreapi -lpthread
 
 bin_PROGRAMS = lond_fetch lond_copytool
+noinst_PROGRAMS = generate_definition
 
-lond_fetch_SOURCES = lond_fetch.c lond.h debug.c debug.h cmd.c cmd.h
-lond_copytool_SOURCES = lond_copytool.c lond.h debug.c debug.h
+lond_fetch_SOURCES = lond_fetch.c lond.h debug.c debug.h cmd.c cmd.h \
+	definition.h
+lond_copytool_SOURCES = lond_copytool.c lond.h debug.c debug.h \
+	definition.h
+generate_definition_SOURCES = generate_definition.c debug.c debug.h \
+        definition.h
+
+../pylond/definition.py: generate_definition
+	./generate_definition ../pylond/definition.py
 
 C_FILES = $(wildcard *.c *.h)
 C_CHECKS = $(C_FILES:%=%.c_checked)
@@ -22,4 +30,4 @@ check_clean-local:
 
 check-local: $(CHECKS)
 
-all: all-am $(CHECKS)
+all: all-am $(CHECKS) ../pylond/definition.py

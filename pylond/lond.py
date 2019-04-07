@@ -7,18 +7,46 @@ Launch LOND commands
 import sys
 import readline
 import traceback
+import socket
+import os
 
 from pylcommon import utils
 from pylcommon import clog
+from pylcommon import ssh_host
+from pylcommon import watched_io
+from pylond import definition
+from pylond import definition_helper
+
+
+def c_command_path(cmd_name):
+    """
+    Return the path of the command
+    """
+    command = sys.argv[0]
+    if "/" in command:
+        directory = os.path.dirname(command)
+        fpath = directory + "/src/" + cmd_name
+        if utils.is_exe(fpath):
+            return fpath
+
+    return cmd_name
 
 
 def usage():
     """
     Print usage string
     """
-    utils.eprint("Usage: %s [command] [options]...\n"
-                 "    [-h|--help]\n"
-                 % sys.argv[0])
+    utils.eprint("\n"
+                 "%s [options]\n"
+                 "%s <command> [args...]\n"
+                 "\n"
+                 "  options:\n"
+                 "    [-h|--help]   this help\n"
+                 "\n"
+                 "  commands (non interactive mode):\n"
+                 "    fetch    fetch dir from global Lustre to on demand Lustre\n"
+                 "    sync     sync dir from on demand Lustre to global Lustre\n"
+                 % (sys.argv[0], sys.argv[0]))
 
 
 class LondCommand(object):
@@ -26,11 +54,11 @@ class LondCommand(object):
     Config command
     """
     # pylint: disable=too-few-public-methods,too-many-arguments
-    def __init__(self, command, function, arguments=None, need_child=False):
+    def __init__(self, command, function, options):
         self.lc_command = command
         self.lc_function = function
-        self.lc_arguments = arguments
-        self.lc_need_child = need_child
+        # Options of CommandOptions type
+        self.lc_options = options
 
 
 LOND_COMMNAD_HELP = "h"
@@ -41,7 +69,7 @@ def lond_command_help(log, args):
     """
     Print the help string
     """
-    log.cl_stdout("""Command action:
+    log.cl_stdout("""commands:
    h                    print this menu
    q                    quit""")
 
@@ -49,7 +77,47 @@ def lond_command_help(log, args):
 
 LOND_COMMANDS = {}
 LOND_COMMANDS[LOND_COMMNAD_HELP] = \
-    LondCommand(LOND_COMMNAD_HELP, lond_command_help)
+    LondCommand(LOND_COMMNAD_HELP, lond_command_help,
+                definition_helper.CommandOptions())
+
+
+LOND_COMMNAD_FETCH = "fetch"
+
+
+def lond_command_fetch(log, args):
+    # pylint: disable=unused-argument
+    """
+    Fetch the file from global Lustre to on demand Lustre
+    """
+    command = c_command_path("lond_fetch")
+    for arg in args[1:]:
+        command += " --%s fetch " % definition.LOND_OPTION_PROGNAME + arg
+
+    hostname = socket.gethostname()
+    host = ssh_host.SSHHost(hostname, local=True)
+
+    args = {}
+    args[watched_io.WATCHEDIO_LOG] = log
+    args[watched_io.WATCHEDIO_HOSTNAME] = host.sh_hostname
+    stdout_fd = watched_io.watched_io_open("/dev/null",
+                                           watched_io.log_watcher_info_simplified,
+                                           args)
+    stderr_fd = watched_io.watched_io_open("/dev/null",
+                                           watched_io.log_watcher_error_simplified,
+                                           args)
+    log.cl_debug("start to run command [%s] on host [%s]",
+                 command, host.sh_hostname)
+    retval = host.sh_run(log, command, stdout_tee=stdout_fd,
+                         stderr_tee=stderr_fd, return_stdout=False,
+                         return_stderr=False, timeout=None, flush_tee=True)
+    stdout_fd.close()
+    stderr_fd.close()
+
+    return retval.cr_exit_status
+
+LOND_COMMANDS[LOND_COMMNAD_FETCH] = \
+    LondCommand(LOND_COMMNAD_FETCH, lond_command_fetch,
+                definition.LOND_FETCH_OPTIONS)
 
 
 class LondInteract(object):
@@ -61,14 +129,6 @@ class LondInteract(object):
         self.li_candidates = []
         self.li_cstr_candidates = []
         self.li_log = log
-
-    def li_children(self):
-        """
-        Return the children under this circumstance
-        """
-        # pylint: disable=no-self-use
-        children = []
-        return children
 
     def li_command_dict(self):
         """
@@ -103,13 +163,9 @@ class LondInteract(object):
                     else:
                         # later word
                         first = words[0]
-                        config_command = self.li_command_dict()[first]
-                        candidates = list(config_command.cli_arguments)
-
-                        if config_command.cli_need_child:
-                            subdirs = self.li_children()
-                            if subdirs is not None:
-                                candidates += subdirs
+                        command = self.li_command_dict()[first]
+                        options = command.lc_options
+                        candidates = options.cos_candidates()
 
                     if being_completed:
                         # match options with portion of input
@@ -119,6 +175,10 @@ class LondInteract(object):
                             if not candidate.startswith(being_completed):
                                 continue
                             self.li_candidates.append(candidate)
+                        if len(words) > 1:
+                            paths = options.cos_complete_path(words[-1])
+                            if paths is not None:
+                                self.li_candidates += paths
                     else:
                         # matching empty string so use all candidates
                         self.li_candidates = candidates
@@ -137,7 +197,6 @@ class LondInteract(object):
         # pylint: disable=broad-except,no-self-use
         log.cl_result.cr_clear()
         log.cl_abort = False
-        log.cl_info("running command [%s]", cmd_line)
         args = cmd_line.split()
         assert len(args) > 0
         command = args[0]
@@ -220,6 +279,12 @@ def main():
             usage()
             sys.exit(0)
         cmdline = sys.argv[1]
+    else:
+        cmdline = ""
+        for arg_index in range(1, argc):
+            if cmdline != "":
+                cmdline += " "
+            cmdline += sys.argv[arg_index]
     log = clog.get_log(simple_console=True)
     interact = LondInteract(log)
     ret = interact.li_loop(cmdline)

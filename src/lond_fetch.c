@@ -10,6 +10,8 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
+#include <unistd.h>
+#include <getopt.h>
 #include <linux/limits.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -29,6 +31,7 @@
 #include <lustre/lustre_user.h>
 #endif
 #include <lustre/lustreapi.h>
+#include "definition.h"
 #include "debug.h"
 #include "cmd.h"
 #include "lond.h"
@@ -74,10 +77,8 @@ struct dest_entry *dest_entry_table;
 static void usage(const char *prog)
 {
 	fprintf(stderr,
-		"\nUsage: %s SOURCE... DEST\n"
-		"Options:\n",
+		"Usage: %s SOURCE... DEST\n",
 		prog);
-	exit(1);
 }
 
 static inline void fid2str(char *buf, const struct lu_fid *fid, int len)
@@ -763,9 +764,30 @@ int main(int argc, char *const argv[])
 	int flags = FTW_PHYS;
 	char dest_buf[PATH_MAX];
 	int dest_buf_size = sizeof(dest_buf);
+	struct option long_opts[] = FETCH_LONG_OPTIONS;
+	char *progname;
+	char short_opts[] = "h";
+	int c;
 
-	if (argc < 3)
-		usage(argv[0]);
+	progname = argv[0];
+	while ((c = getopt_long(argc, argv, short_opts,
+				long_opts, NULL)) != -1) {
+		switch (c) {
+		case OPT_PROGNAME:
+			progname = optarg;
+			break;
+		case 'h':
+			usage(progname);
+			exit(1);
+		default:
+			LERROR("failed to parse option [%c]\n", c);
+			usage(progname);
+			exit(1);
+		}
+	}
+
+	if (argc < optind + 2)
+		usage(progname);
 
 	randomize_string(identity, sizeof(identity));
 
@@ -778,14 +800,14 @@ int main(int argc, char *const argv[])
 			break;
 	}
 	if (strlen(dest) <= 0)
-		usage(argv[0]);
+		usage(progname);
 	rc = relative_path2absolute(dest, dest_buf_size);
 	if (rc) {
 		LERROR("failed to get absolute path of [%s]\n", dest);
 		return rc;
 	}
 
-	for (i = 1; i < argc - 1; i++) {
+	for (i = optind; i < argc - 1; i++) {
 		source = argv[i];
 		rc = chdir(source);
 		if (rc) {
@@ -811,7 +833,7 @@ int main(int argc, char *const argv[])
 	free_dest_table(&dest_entry_table);
 
 #ifndef DEBUG_PERF
-	for (i = 1; i < argc - 1; i++) {
+	for (i = optind; i < argc - 1; i++) {
 		source = argv[i];
 		rc = chdir(source);
 		if (rc) {

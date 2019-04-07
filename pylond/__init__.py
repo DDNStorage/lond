@@ -1,4 +1,5 @@
 """
 Python library for LOND
 """
-__all__ = ["lond"]
+__all__ = ["definition_helper",
+           "lond"]
