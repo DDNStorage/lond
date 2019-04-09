@@ -176,7 +176,7 @@ class LondInteract(object):
                                 continue
                             self.li_candidates.append(candidate)
                         if len(words) > 1:
-                            paths = options.cos_complete_path(words[-1])
+                            paths = options.cos_complete_path(being_completed)
                             if paths is not None:
                                 self.li_candidates += paths
                     else:
