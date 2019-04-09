@@ -1,2 +1,5 @@
 [TYPECHECK]
-
+# Fix the error: Class 'CopytooldMessage' has no '...' member
+ignored-classes=CopytooldMessage
+# Fix the error: Module 'zmq' has no 'REQ' member (no-member)
+generated-members=zmq.REQ,zmq.REP,zmq.ROUTER,zmq.DEALER,zmq.proxy,zmq.LINGER

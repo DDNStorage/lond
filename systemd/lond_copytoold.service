@@ -1,0 +1,10 @@
+[Unit]
+Description=Copytool Daemon of Lustre on Demand.
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/lond_copytoold
+User=root
+
+[Install]
+WantedBy=multi-user.target

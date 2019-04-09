@@ -45,6 +45,7 @@ struct copytool_options {
 	int			*o_archive_id;
 	bool			 o_all_id;
 	bool			 o_abort_on_error;
+	int			 o_daemonize;
 	int			 o_report_int;
 	int			 o_chunk_size;
 	unsigned long long	 o_bandwidth;
@@ -629,6 +630,15 @@ static int start_copytool(void)
 	struct sigaction cleanup_sigaction;
 	int rc;
 
+	if (opt.o_daemonize) {
+		rc = daemon(1, 1);
+		if (rc < 0) {
+			rc = -errno;
+			LERROR("cannot daemonize: %s\n", strerror(-rc));
+			return rc;
+		}
+	}
+
 	rc = llapi_hsm_copytool_register(&ctdata, opt.o_mnt,
 					 opt.o_archive_id_used,
 					 opt.o_archive_id, 0);
@@ -674,8 +684,14 @@ static int start_copytool(void)
 	return rc;
 }
 
-static void usage(const char *name, int rc)
+static void usage(const char *prog, int rc)
 {
+	fprintf(stderr,
+		"Usage: %s [OPTION] source dest\n"
+		"    -h|--help\n"
+		"    -i|--identity <archive_id>\n"
+		"    --daemon\n",
+		prog);
 	exit(rc);
 }
 
@@ -731,19 +747,21 @@ static int parse_option_archive(const char *opt_string)
 int main(int argc, char *const argv[])
 {
 	struct option long_opts[] = {
-		{"archive",	   required_argument, NULL,		   'A'},
-		{"help",	   no_argument,	      NULL,		   'h'},
-		{"hsm-root",	   required_argument, NULL,		   'p'},
-		{"hsm_root",	   required_argument, NULL,		   'p'},
+		{"identity",	required_argument,	NULL,	'i'},
+		{"help",	no_argument,		NULL,	'h'},
+		{"daemon",	no_argument, &opt.o_daemonize,	1},
 		{0, 0, 0, 0}
 	};
 	int rc;
 	int c;
+	char *lustre;
+	char hsm_buffer[PATH_MAX];
+	char buffer[PATH_MAX];
 
-	while ((c = getopt_long(argc, argv, "A:hp:",
+	while ((c = getopt_long(argc, argv, "hi:",
 				long_opts, NULL)) != -1) {
 		switch (c) {
-		case 'A':
+		case 'i':
 			rc = parse_option_archive(optarg);
 			if (rc) {
 				LERROR("failed to parse archive option [%s]\n",
@@ -753,27 +771,53 @@ int main(int argc, char *const argv[])
 			break;
 		case 'h':
 			usage(argv[0], 0);
-		case 'p':
-			opt.o_hsm_root = optarg;
+		case 0:
 			break;
 		default:
-			LERROR("unknown option [%s]\n", optarg);
+			LERROR("unknown option\n");
 			usage(argv[0], -EINVAL);
 		}
 	}
 
-	if (argc != optind + 1) {
+	if (argc != optind + 2) {
 		rc = -EINVAL;
-		LERROR("must specify mount point at in the command\n");
-		return rc;
+		LERROR("must specify source and dest Lustre file systems\n");
+		usage(argv[0], rc);
 	}
 
-	opt.o_mnt = argv[optind];
+	lustre = argv[optind];
+	if (lustre[0] == '/') {
+		opt.o_hsm_root = lustre;
+	} else {
+		opt.o_hsm_root = hsm_buffer;
+		rc = llapi_search_rootpath(hsm_buffer, lustre);
+		if (rc) {
+			LERROR("failed to find root path of Lustre file system [%s]",
+			       lustre);
+			return rc;
+		}
+	}
+	optind++;
+
+	lustre = argv[optind];
+	if (lustre[0] == '/') {
+		opt.o_mnt = lustre;
+	} else {
+		opt.o_mnt = buffer;
+		rc = llapi_search_rootpath(buffer, lustre);
+		if (rc) {
+			LERROR("failed to find root path of Lustre file system [%s]",
+			       lustre);
+			return rc;
+		}
+	}
+
 	opt.o_mnt_fd = -1;
 
 	if (opt.o_hsm_root == NULL) {
-		LERROR("must specify a root directory for the backend using option [-p]\n");
-		return -EINVAL;
+		LERROR("must specify a root directory for the backend using option [-b]\n");
+		rc = -EINVAL;
+		usage(argv[0], rc);
 	}
 
 	rc = setup();

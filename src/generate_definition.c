@@ -68,9 +68,10 @@ int main(int argc, char **argv)
 		if ((option->val >= 'a' && option->val <= 'x') ||
 		    (option->val >= 'A' && option->val <= 'X')) {
 			buffer[0] = '\'';
-			buffer[1] = option->val;
-			buffer[2] = '\'';
-			buffer[3] = '\0';
+			buffer[1] = '-';
+			buffer[2] = option->val;
+			buffer[3] = '\'';
+			buffer[4] = '\0';
 			short_opt = buffer;
 		} else {
 			short_opt = "None";
@@ -80,7 +81,7 @@ int main(int argc, char **argv)
 		else
 			has_arg = "False";
 		fprintf(fp,
-			"OPTION = definition_helper.CommandOption('%s', %s, short_opt=%s)\n",
+			"OPTION = definition_helper.CommandOption('-%s', %s, short_opt=%s)\n",
 			option->name, has_arg, short_opt);
 		fprintf(fp, "LOND_FETCH_OPTIONS.cos_add_option(OPTION)\n");
 		option++;

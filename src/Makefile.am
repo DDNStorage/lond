@@ -4,7 +4,8 @@ ACLOCAL_AMFLAGS = ${ALOCAL_FLAGS}
 AM_CFLAGS = -Wall -Werror -g $(json_c_CFLAGS) $(json_c_LIBS) \
 	-llustreapi -lpthread
 
-bin_PROGRAMS = lond_fetch lond_copytool
+sbin_PROGRAMS = lond_copytool
+bin_PROGRAMS = lond_fetch
 noinst_PROGRAMS = generate_definition
 
 lond_fetch_SOURCES = lond_fetch.c lond.h debug.c debug.h cmd.c cmd.h \

@@ -61,9 +61,9 @@ class CommandOptions(object):
         """
         candidates = []
         for option in self.cos_options:
-            candidates.append("--" + option.co_long_opt)
+            candidates.append(option.co_long_opt)
             if option.co_short_opt is not None:
-                candidates.append("-" + option.co_short_opt)
+                candidates.append(option.co_short_opt)
 
         if self.cos_has_dir_path:
             for fname in os.listdir(os.getcwd()):

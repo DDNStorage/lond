@@ -1,0 +1,38 @@
+syntax = "proto2";
+package copytoold;
+message CopytooldMessage {
+    enum CopytooldProtocolVersion {
+        CPV_ZERO = 0;
+    }
+
+    enum CopytooldMessageType {
+        CMT_GENERAL = 0;
+        CMT_START_REQUEST = 1;
+        CMT_START_REPLY = 2;
+    }
+
+    enum CopytooldErrno {
+        CE_NO_ERROR = 0;
+        /* Request type is not supported */
+        CE_NO_TYPE = 1;
+        /* Operation failed */
+        CE_OPERATION_FAILED = 2;
+    }
+
+    message CopytooldStartRequest {
+        required int32 csr_archive_id_number = 1;
+        repeated int32 csr_archive_ids = 2;
+        required string csr_source = 3;
+        required string csr_dest = 4;
+    }
+
+    message CopytooldStartReply {
+    }
+
+    required CopytooldProtocolVersion cm_protocol_version = 1;
+    required CopytooldMessageType cm_type = 2;
+    required CopytooldErrno cm_errno = 3;
+    optional CopytooldStartRequest cm_start_request = 4;
+    optional CopytooldStartReply cm_start_reply = 5;
+}
+

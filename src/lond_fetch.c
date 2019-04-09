@@ -809,6 +809,7 @@ int main(int argc, char *const argv[])
 
 	for (i = optind; i < argc - 1; i++) {
 		source = argv[i];
+	    LINFO("fetching directory [%s] to dest [%s]\n", source, dest);
 		rc = chdir(source);
 		if (rc) {
 			LERROR("failed to chdir to [%s]: %s\n", source,

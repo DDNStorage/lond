@@ -8,45 +8,36 @@ import sys
 import readline
 import traceback
 import socket
-import os
 
 from pylcommon import utils
 from pylcommon import clog
-from pylcommon import ssh_host
 from pylcommon import watched_io
+from pylcommon import lustre
 from pylond import definition
 from pylond import definition_helper
+from pylond import copytoold_client
+from pylond import common
 
 
-def c_command_path(cmd_name):
+def simple_usage():
     """
-    Return the path of the command
+    Print simple usage string
     """
-    command = sys.argv[0]
-    if "/" in command:
-        directory = os.path.dirname(command)
-        fpath = directory + "/src/" + cmd_name
-        if utils.is_exe(fpath):
-            return fpath
-
-    return cmd_name
+    utils.eprint("  commands:\n"
+                 "    fetch     fetch dir from global Lustre to on demand Lustre\n"
+                 "    sync      sync dir from on demand Lustre to global Lustre")
 
 
 def usage():
     """
     Print usage string
     """
-    utils.eprint("\n"
-                 "%s [options]\n"
+    utils.eprint("%s [options]\n"
                  "%s <command> [args...]\n"
-                 "\n"
                  "  options:\n"
-                 "    [-h|--help]   this help\n"
-                 "\n"
-                 "  commands (non interactive mode):\n"
-                 "    fetch    fetch dir from global Lustre to on demand Lustre\n"
-                 "    sync     sync dir from on demand Lustre to global Lustre\n"
+                 "    -h|--help   print this help"
                  % (sys.argv[0], sys.argv[0]))
+    simple_usage()
 
 
 class LondCommand(object):
@@ -61,40 +52,83 @@ class LondCommand(object):
         self.lc_options = options
 
 
-LOND_COMMNAD_HELP = "h"
-
-
-def lond_command_help(log, args):
-    # pylint: disable=unused-argument
-    """
-    Print the help string
-    """
-    log.cl_stdout("""commands:
-   h                    print this menu
-   q                    quit""")
-
-    return 0
-
 LOND_COMMANDS = {}
-LOND_COMMANDS[LOND_COMMNAD_HELP] = \
-    LondCommand(LOND_COMMNAD_HELP, lond_command_help,
-                definition_helper.CommandOptions())
 
 
-LOND_COMMNAD_FETCH = "fetch"
-
-
-def lond_command_fetch(log, args):
-    # pylint: disable=unused-argument
+def lond_command_fetch(interact, log, args):
+    # pylint: disable=too-many-locals,too-many-branches,too-many-statements
+    # pylint: disable=too-many-return-statements,unused-argument
     """
     Fetch the file from global Lustre to on demand Lustre
     """
-    command = c_command_path("lond_fetch")
+    hostname = socket.gethostname()
+    host = lustre.LustreServerHost(hostname, local=True)
+
+    start_copytool = True
+    sources = []
+    dest = None
+    real_args = args[1:]
+    for arg_index, arg in enumerate(real_args):
+        if arg == "-h" or arg == "--help":
+            start_copytool = False
+        if arg_index == len(real_args) - 1:
+            dest = arg
+        else:
+            sources.append(arg)
+
+    if start_copytool:
+        if dest is None:
+            log.cl_error("please specify the dest directory")
+            return -1
+
+        if len(sources) == 0:
+            log.cl_error("please specify one or more source directories")
+            return -1
+
+        source_fsnames = []
+        for source in sources:
+            client_name = host.lsh_getname(log, source)
+            if client_name is None:
+                log.cl_error("failed to get the Lustre client name of [%s]", source)
+                return -1
+            fsname = lustre.get_fsname_from_service_name(client_name)
+            if fsname is None:
+                log.cl_error("failed to get the Lustre fsname from client name [%s]",
+                             client_name)
+                return -1
+            if fsname not in source_fsnames:
+                source_fsnames.append(fsname)
+
+        dest_client_name = host.lsh_getname(log, dest)
+        if dest_client_name is None:
+            log.cl_error("failed to get the Lustre client name of [%s]", dest)
+            return -1
+        dest_fsname = lustre.get_fsname_from_service_name(dest_client_name)
+        if dest_fsname is None:
+            log.cl_error("failed to get the Lustre fsname from client name [%s]",
+                         dest_fsname)
+            return -1
+
+        if dest_fsname in source_fsnames:
+            log.cl_error("fetching directory to the same Lustre file system [%s] is not allowed",
+                         dest_fsname)
+            return -1
+
+        cclient = copytoold_client.CopytooldClient("tcp://localhost:3003")
+        for source_fsname in source_fsnames:
+            log.cl_info("starting copytool from [%s] to [%s]", source_fsname, dest_fsname)
+            ret = cclient.cc_send_start_request(log, source_fsname, dest_fsname)
+            if ret:
+                log.cl_info("failed to start copytool from [%s] to [%s]",
+                            source_fsname, dest_fsname)
+                cclient.cc_fini()
+                return -1
+            log.cl_info("started copytool from [%s] to [%s]", source_fsname, dest_fsname)
+        cclient.cc_fini()
+
+    command = common.c_command_path("lond_fetch")
     for arg in args[1:]:
         command += " --%s fetch " % definition.LOND_OPTION_PROGNAME + arg
-
-    hostname = socket.gethostname()
-    host = ssh_host.SSHHost(hostname, local=True)
 
     args = {}
     args[watched_io.WATCHEDIO_LOG] = log
@@ -115,9 +149,39 @@ def lond_command_fetch(log, args):
 
     return retval.cr_exit_status
 
+LOND_COMMNAD_FETCH = "fetch"
 LOND_COMMANDS[LOND_COMMNAD_FETCH] = \
     LondCommand(LOND_COMMNAD_FETCH, lond_command_fetch,
                 definition.LOND_FETCH_OPTIONS)
+
+
+def lond_command_help(interact, log, args):
+    # pylint: disable=unused-argument
+    """
+    Print the help string
+    """
+    if len(args) <= 1:
+        simple_usage()
+        utils.eprint("\n    h         print this help\n"
+                     "    h <cmd>   print help of command <cmd>\n"
+                     "    <cmd> -h  print help of command <cmd>\n"
+                     "\n"
+                     "    q         quit")
+        return 0
+    else:
+        cmd_line = "%s -h" % args[1]
+        return interact.li_command(log, cmd_line)
+
+
+LOND_COMMNAD_HELP = "h"
+LOND_HELP_OPTIONS = definition_helper.CommandOptions()
+for lond_command in LOND_COMMANDS.values():
+    option = definition_helper.CommandOption(lond_command.lc_command, False)
+    LOND_HELP_OPTIONS.cos_add_option(option)
+
+LOND_COMMANDS[LOND_COMMNAD_HELP] = \
+    LondCommand(LOND_COMMNAD_HELP, lond_command_help,
+                LOND_HELP_OPTIONS)
 
 
 class LondInteract(object):
@@ -206,7 +270,7 @@ class LondInteract(object):
         else:
             lcommand = LOND_COMMANDS[command]
         try:
-            return lcommand.lc_function(log, args)
+            return lcommand.lc_function(self, log, args)
         except Exception, err:
             log.cl_stderr("failed to run command %s, exception: "
                           "%s, %s",
