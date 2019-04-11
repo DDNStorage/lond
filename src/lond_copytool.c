@@ -687,10 +687,15 @@ static int start_copytool(void)
 static void usage(const char *prog, int rc)
 {
 	fprintf(stderr,
-		"Usage: %s [OPTION] source dest\n"
-		"    -h|--help\n"
-		"    -i|--identity <archive_id>\n"
-		"    --daemon\n",
+		"Usage: %s [OPTION] <source> <dest>\n"
+		"  options:\n"
+		"    -h|--help  print this help\n"
+		"    -i|--identity <archive_id>   set the ID(s)\n"
+		"    --daemon   daemonize this copytool\n"
+		"\n"
+		"  source: source Lustre mount point or fsname\n"
+		"  dest: target Lustre mount point or fsname\n"
+		"  archive_id: integer archive ID\n",
 		prog);
 	exit(rc);
 }

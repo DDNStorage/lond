@@ -1,0 +1,11 @@
+#!/usr/bin/python -u
+# Copyright (c) 2019 DataDirect Networks, Inc.
+# All Rights Reserved.
+# Author: lixi@ddn.com
+"""
+Run lond_copytoold commands
+"""
+from pylond import lond_copytoold
+
+if __name__ == "__main__":
+    lond_copytoold.main()

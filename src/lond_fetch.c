@@ -77,7 +77,9 @@ struct dest_entry *dest_entry_table;
 static void usage(const char *prog)
 {
 	fprintf(stderr,
-		"Usage: %s SOURCE... DEST\n",
+		"Usage: %s <source>... <dest>\n"
+		"  source: Lustre directory to fetch\n"
+		"  dest: target Lustre directory\n",
 		prog);
 }
 

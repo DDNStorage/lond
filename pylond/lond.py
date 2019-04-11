@@ -32,11 +32,12 @@ def usage():
     """
     Print usage string
     """
-    utils.eprint("%s [options]\n"
-                 "%s <command> [args...]\n"
+    utils.eprint("Usage: %s [options]\n"
+                 "or     %s <command> -h|--help\n"
+                 "or     %s <command> [args...]\n"
                  "  options:\n"
                  "    -h|--help   print this help"
-                 % (sys.argv[0], sys.argv[0]))
+                 % (sys.argv[0], sys.argv[0], sys.argv[0]))
     simple_usage()
 
 
