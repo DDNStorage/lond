@@ -25,7 +25,8 @@ def simple_usage():
     """
     utils.eprint("  commands:\n"
                  "    fetch     fetch dir from global Lustre to on demand Lustre\n"
-                 "    sync      sync dir from on demand Lustre to global Lustre")
+                 "    sync      sync dir from on demand Lustre to global Lustre\n"
+                 "    unlock    unlock global Lustre directory trees or files\n")
 
 
 def usage():
@@ -120,16 +121,20 @@ def lond_command_fetch(interact, log, args):
             log.cl_info("starting copytool from [%s] to [%s]", source_fsname, dest_fsname)
             ret = cclient.cc_send_start_request(log, source_fsname, dest_fsname)
             if ret:
-                log.cl_info("failed to start copytool from [%s] to [%s]",
-                            source_fsname, dest_fsname)
+                log.cl_error("failed to start copytool from [%s] to [%s]",
+                             source_fsname, dest_fsname)
+                log.cl_error("please run [systemctl start lond_copytoold && "
+                             "systemctl enable lond_copytoold.service] to "
+                             "start the lond_copytoold service")
                 cclient.cc_fini()
                 return -1
             log.cl_info("started copytool from [%s] to [%s]", source_fsname, dest_fsname)
         cclient.cc_fini()
 
     command = common.c_command_path("lond_fetch")
+    command += " --%s fetch" % definition.LOND_OPTION_PROGNAME
     for arg in args[1:]:
-        command += " --%s fetch " % definition.LOND_OPTION_PROGNAME + arg
+        command += " " + arg
 
     args = {}
     args[watched_io.WATCHEDIO_LOG] = log
@@ -154,6 +159,45 @@ LOND_COMMNAD_FETCH = "fetch"
 LOND_COMMANDS[LOND_COMMNAD_FETCH] = \
     LondCommand(LOND_COMMNAD_FETCH, lond_command_fetch,
                 definition.LOND_FETCH_OPTIONS)
+
+
+def lond_command_unlock(interact, log, args):
+    # pylint: disable=too-many-locals,too-many-branches,too-many-statements
+    # pylint: disable=too-many-return-statements,unused-argument
+    """
+    Unlock the file on global Lustre
+    """
+    hostname = socket.gethostname()
+    host = lustre.LustreServerHost(hostname, local=True)
+
+    command = common.c_command_path("lond_unlock")
+    command += " --%s fetch" % definition.LOND_OPTION_PROGNAME
+    for arg in args[1:]:
+        command += " " + arg
+
+    args = {}
+    args[watched_io.WATCHEDIO_LOG] = log
+    args[watched_io.WATCHEDIO_HOSTNAME] = host.sh_hostname
+    stdout_fd = watched_io.watched_io_open("/dev/null",
+                                           watched_io.log_watcher_info_simplified,
+                                           args)
+    stderr_fd = watched_io.watched_io_open("/dev/null",
+                                           watched_io.log_watcher_error_simplified,
+                                           args)
+    log.cl_debug("start to run command [%s] on host [%s]",
+                 command, host.sh_hostname)
+    retval = host.sh_run(log, command, stdout_tee=stdout_fd,
+                         stderr_tee=stderr_fd, return_stdout=False,
+                         return_stderr=False, timeout=None, flush_tee=True)
+    stdout_fd.close()
+    stderr_fd.close()
+
+    return retval.cr_exit_status
+
+LOND_COMMNAD_UNLOCK = "unlock"
+LOND_COMMANDS[LOND_COMMNAD_UNLOCK] = \
+    LondCommand(LOND_COMMNAD_UNLOCK, lond_command_unlock,
+                definition.LOND_UNLOCK_OPTIONS)
 
 
 def lond_command_help(interact, log, args):

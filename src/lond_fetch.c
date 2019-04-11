@@ -36,16 +36,12 @@
 #include "cmd.h"
 #include "lond.h"
 
-#define DEBUG_PERF 1
-
 /* The dest directory to copy to */
 char *dest;
 /* The dest directory that contains the source basename */
 char dest_source_dir[PATH_MAX];
-#define LOND_IDENTITY_LENGH 10
-char identity[LOND_IDENTITY_LENGH];
+char global_key[LOND_KEY_LENGH + 1];
 __u32 archive_id = 1;
-#define XATTR_NAME_LOND	"trusted.lond"
 /*
  * Use ST_DEV and ST_INO as the key, FILENAME as the value.
  * These are used to associate the destination name with the source
@@ -78,7 +74,7 @@ static void usage(const char *prog)
 {
 	fprintf(stderr,
 		"Usage: %s <source>... <dest>\n"
-		"  source: Lustre directory to fetch\n"
+		"  source: Lustre directory tree to fetch\n"
 		"  dest: target Lustre directory\n",
 		prog);
 }
@@ -435,193 +431,6 @@ static int create_stub_inode(const char *src_name, const char *dst_name)
 	return rc;
 }
 
-static int check_inode_is_immutable(const char *fpath, bool *immutable)
-{
-	int i;
-	int rc;
-	char cmd[PATH_MAX];
-	int cmdsz = sizeof(cmd);
-	char output[PATH_MAX];
-	int output_sz = sizeof(output);
-
-	snprintf(cmd, cmdsz, "lsattr -d '%s'", fpath);
-	rc = command_read(cmd, output, output_sz - 1);
-	if (rc) {
-		LERROR("failed to run command [%s], rc = %d\n",
-		       cmd, rc);
-		return rc;
-	}
-
-	*immutable = false;
-	for (i = 0; i < strlen(output); i++) {
-		if (output[i] == ' ')
-			break;
-		if (output[i] == 'i') {
-			*immutable = true;
-			break;
-		}
-	}
-	return 0;
-}
-
-/*
- * Print the EPERM reason of an inode,
- * If the inode is locked by myself, return 0. Otherwise, negative value.
- */
-static int lond_lock_eperm_reason(const char *fpath)
-{
-	int rc;
-	bool immutable = false;
-	char xattr_identity[LOND_IDENTITY_LENGH];
-
-	rc = check_inode_is_immutable(fpath, &immutable);
-	if (rc) {
-		LERROR("failed to check whether file [%s] is immutable\n",
-		       fpath);
-		return rc;
-	}
-
-	if (!immutable) {
-		LERROR("file [%s] is not immutable as expected\n", fpath);
-		return -EPERM;
-	}
-
-	rc = getxattr(fpath, XATTR_NAME_LOND, xattr_identity,
-		      sizeof(xattr_identity));
-	if (rc < 0) {
-		LERROR("failed to get LOND xattr of [%s]: %s\n",
-		       fpath, strerror(errno));
-		LERROR("file [%s] can't be locked because it is immutable\n",
-		       fpath);
-		return -errno;
-	}
-
-	if (strcmp(xattr_identity, identity) == 0)
-		return 0;
-
-	LERROR("file [%s] is being hold by LOND with ID [%s]\n", fpath,
-	       xattr_identity);
-	return -EBUSY;
-}
-
-/*
- * Steps to lock an inode:
- *
- * 1) Set the xattr;
- * 2) chattr +i;
- * 3) If 2) fails because the flag already exists, ignore the failure.
- * 4) Check whether the xattr has expected value, if not, return failure
- */
-static int lond_lock_inode(const char *fpath)
-{
-	int rc;
-	int rc2;
-	char cmd[PATH_MAX];
-	int cmdsz = sizeof(cmd);
-	char xattr_identity[LOND_IDENTITY_LENGH];
-
-#ifdef DEBUG_PERF
-	return 0;
-#endif
-
-	rc = setxattr(fpath, XATTR_NAME_LOND, &identity, sizeof(identity), 0);
-	if (rc) {
-		rc2 = -errno;
-		if (errno == EPERM) {
-			rc = lond_lock_eperm_reason(fpath);
-			if (rc == 0)
-				return 0;
-		}
-		LERROR("failed to set LOND xattr of [%s]: %s\n",
-		       fpath, strerror(errno));
-		return rc2;
-	}
-
-	snprintf(cmd, cmdsz, "chattr +i '%s'", fpath);
-	rc = command_run(cmd, cmdsz);
-	if (rc) {
-		LERROR("failed to set immutable flag of [%s], rc = %d\n",
-		       fpath, rc);
-		return rc;
-	}
-
-	rc = getxattr(fpath, XATTR_NAME_LOND, xattr_identity,
-		      sizeof(xattr_identity));
-	if (rc < 0) {
-		LERROR("failed to get LOND xattr of [%s]: %s\n",
-		       fpath, strerror(errno));
-		return rc;
-	}
-
-	if (strcmp(xattr_identity, identity) != 0) {
-		LDEBUG("someone else locks [%s], expected identity [%s], got identity [%s]\n",
-		       identity, xattr_identity);
-		return -1;
-	}
-	LDEBUG("set immutable flag [%s]\n", fpath);
-	return 0;
-}
-
-/*
- * Steps to unlock an inode:
- *
- * 1) If immutable flag is not set, the inode should not be locked or already
- *    been unlocked.
- * 2) Read the xattr.
- * 3) If the xattr matches the identity, chattr -i
- */
-static int lond_unlock_inode(const char *fpath, bool may_used_by_other)
-{
-	int rc;
-	char cmd[PATH_MAX];
-	int cmdsz = sizeof(cmd);
-	bool immutable = false;
-	char xattr_identity[LOND_IDENTITY_LENGH];
-
-	rc = check_inode_is_immutable(fpath, &immutable);
-	if (rc) {
-		LERROR("failed to check whether file [%s] is immutable\n",
-		       fpath);
-		return rc;
-	}
-
-	if (!immutable) {
-		LDEBUG("file [%s] is not immutable, skipping unlocking\n",
-		       fpath);
-		return 0;
-	}
-
-	rc = getxattr(fpath, XATTR_NAME_LOND, xattr_identity,
-		      sizeof(xattr_identity));
-	if (rc < 0) {
-		LERROR("failed to get LOND xattr of [%s]: %s\n",
-		       fpath, strerror(errno));
-		return rc;
-	}
-
-	if (strcmp(xattr_identity, identity) != 0) {
-		if (may_used_by_other) {
-			LDEBUG("someone else locks [%s], expected identity [%s], got identity [%s]\n",
-			       identity, xattr_identity);
-			return 0;
-		} else {
-			LERROR("someone else locks [%s], expected identity [%s], got identity [%s]\n",
-			       identity, xattr_identity);
-			return -1;
-		}
-	}
-
-	snprintf(cmd, cmdsz, "chattr -i '%s'", fpath);
-	rc = command_run(cmd, cmdsz);
-	if (rc) {
-		LERROR("failed to clear immutable flag of [%s], rc = %d\n",
-		       fpath, rc);
-		return rc;
-	}
-	LDEBUG("cleared immutable flag [%s]\n", fpath);
-	return 0;
-}
-
 /* The function of nftw() to creat stub file */
 static int nftw_create_stub_fn(const char *fpath, const struct stat *sb,
 			       int tflag, struct FTW *ftwbuf)
@@ -633,6 +442,13 @@ static int nftw_create_stub_fn(const char *fpath, const struct stat *sb,
 	int cwdsz = sizeof(cwd_buf);
 	char dest_dir[PATH_MAX];
 	int dest_dir_size = sizeof(dest_dir);
+	char full_fpath[PATH_MAX];
+
+	rc = get_full_fpath(fpath, full_fpath, PATH_MAX);
+	if (rc) {
+		LERROR("failed to get full path of [%s]\n", fpath);
+		return rc;
+	}
 
 	LDEBUG("%-3s %2d %7lld   %-40s %d %s\n",
 	       (tflag == FTW_D) ?   "d"   : (tflag == FTW_DNR) ? "dnr" :
@@ -640,14 +456,14 @@ static int nftw_create_stub_fn(const char *fpath, const struct stat *sb,
 	       (tflag == FTW_NS) ?  "ns"  : (tflag == FTW_SL) ?  "sl" :
 	       (tflag == FTW_SLN) ? "sln" : "???",
 	       ftwbuf->level, (long long int)sb->st_size,
-	       fpath, ftwbuf->base, fpath + ftwbuf->base);
+	       full_fpath, ftwbuf->base, fpath + ftwbuf->base);
 
 	/* Only set directory and regular file to immutable */
 	if (S_ISREG(sb->st_mode) || S_ISDIR(sb->st_mode)) {
 		/* Lock the inode first before copying to dest */
-		rc = lond_lock_inode(fpath);
+		rc = lond_inode_lock(fpath, global_key);
 		if (rc) {
-			LERROR("failed to lock file [%s]\n", fpath);
+			LERROR("failed to lock file [%s]\n", full_fpath);
 			return rc;
 		}
 	}
@@ -676,26 +492,8 @@ static int nftw_create_stub_fn(const char *fpath, const struct stat *sb,
 	}
 
 	if (rc) {
-		LERROR("failed to create stub file\n");
-		return rc;
-	}
-	return 0;
-}
-
-/* The function of nftw() to unlock file */
-static int nftw_unlock_fn(const char *fpath, const struct stat *sb,
-			  int tflag, struct FTW *ftwbuf)
-{
-	int rc;
-
-	/* Only set regular files and directories to immutable */
-	if (!S_ISREG(sb->st_mode) && !S_ISDIR(sb->st_mode))
-		return 0;
-
-	/* Lock the inode first before copying to dest */
-	rc = lond_unlock_inode(fpath, true);
-	if (rc) {
-		LERROR("failed to unlock file [%s]\n", fpath);
+		LERROR("failed to create stub inode of [%s] in target [%s]\n",
+		       full_fpath, dest_source_dir);
 		return rc;
 	}
 	return 0;
@@ -723,27 +521,6 @@ static int relative_path2absolute(char *path, int buf_size)
 	return 0;
 }
 
-/* Return a random int smaller than n */
-static int random_int(int n)
-{
-	return rand() % n;
-}
-
-
-const char alphabet[] =
-"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-
-/* Fill the string with random */
-void randomize_string(char *string, int buf_size)
-{
-	int i;
-
-	LASSERT(buf_size > 1);
-	for (i = 0; i < buf_size - 1; i++)
-		string[i] = alphabet[random_int(strlen(alphabet))];
-	string[buf_size - 1] = '\0';
-}
-
 /*
  * Assumptions:
  * 1) Source directories and dest are all Lustre directories.
@@ -766,7 +543,7 @@ int main(int argc, char *const argv[])
 	int flags = FTW_PHYS;
 	char dest_buf[PATH_MAX];
 	int dest_buf_size = sizeof(dest_buf);
-	struct option long_opts[] = FETCH_LONG_OPTIONS;
+	struct option long_opts[] = LOND_FETCH_OPTIONS;
 	char *progname;
 	char short_opts[] = "h";
 	int c;
@@ -791,7 +568,11 @@ int main(int argc, char *const argv[])
 	if (argc < optind + 2)
 		usage(progname);
 
-	randomize_string(identity, sizeof(identity));
+	rc = generate_key(global_key, sizeof(global_key));
+	if (rc) {
+		LERROR("failed to generate lock key\n");
+		return rc;
+	}
 
 	dest = dest_buf;
 	strncpy(dest_buf, argv[argc - 1], dest_buf_size);
@@ -805,13 +586,14 @@ int main(int argc, char *const argv[])
 		usage(progname);
 	rc = relative_path2absolute(dest, dest_buf_size);
 	if (rc) {
-		LERROR("failed to get absolute path of [%s]\n", dest);
+		LERROR("failed to get absolute path of target [%s]\n", dest);
 		return rc;
 	}
 
 	for (i = optind; i < argc - 1; i++) {
 		source = argv[i];
-	    LINFO("fetching directory [%s] to dest [%s]\n", source, dest);
+		LINFO("fetching directory [%s] to target [%s] with lock key [%s]\n",
+		      source, dest, global_key);
 		rc = chdir(source);
 		if (rc) {
 			LERROR("failed to chdir to [%s]: %s\n", source,
@@ -822,37 +604,21 @@ int main(int argc, char *const argv[])
 
 		rc = nftw(".", nftw_create_stub_fn, 32, flags);
 		if (rc) {
-			LERROR("failed to walk directory [%s] to create stub files\n",
-			       source);
+			LERROR("failed to fetch directory tree [%s] to target [%s] with key [%s]\n",
+			       source, dest, global_key);
 			rc2 = rc2 ? rc2 : rc;
-			rc = nftw(".", nftw_unlock_fn, 32, flags);
+			rc = lond_tree_unlock(".", global_key, true);
 			if (rc) {
-				LERROR("failed to walk directory [%s] to unlock files\n",
-				       source);
+				LERROR("you might want to run [lond unlock -k %s %s] to cleanup\n",
+				       global_key, source);
 			}
+		} else {
+			LINFO("fetched directory [%s] to target [%s] with lock key [%s]\n",
+			      source, dest, global_key);
 		}
 	}
 
 	free_dest_table(&dest_entry_table);
 
-#ifndef DEBUG_PERF
-	for (i = optind; i < argc - 1; i++) {
-		source = argv[i];
-		rc = chdir(source);
-		if (rc) {
-			LERROR("failed to chdir to [%s]: %s\n", source,
-			       strerror(errno));
-			rc2 = rc2 ? rc2 : rc;
-			continue;
-		}
-
-		rc = nftw(".", nftw_unlock_fn, 32, flags);
-		if (rc) {
-			LERROR("failed to walk directory [%s] to unlock files\n",
-			       source);
-			rc2 = rc2 ? rc2 : rc;
-		}
-	}
-#endif
 	return rc2;
 }
