@@ -41,11 +41,10 @@ struct dest_entry *dest_entry_table;
 static void usage(const char *prog)
 {
 	fprintf(stderr,
-		"Usage: %s [-d] -k <key> <file>...\n"
-		"  file: Lustre directory tree or regular file to unlock\n"
-		"  key: lock key, use \"%s\" to unlock without checking key\n"
+		"Usage: %s [-d] <file>...\n"
+		"  file: Lustre directory tree or regular file to stat\n"
 		"  -d: only unlock directory itslef, not its sub-tree recursively\n",
-		prog, LOND_KEY_ANY);
+		prog);
 }
 
 /*
@@ -54,7 +53,7 @@ static void usage(const char *prog)
  * 2) Files could be in different Lustre file system.
  * 3) Files could be unlocked or locked.
  * 4) No one else except LOND is using immutable flag.
- * 5) The tree of could mount another Lustre file system, but not other file system.
+ * 5) The tree shall not mount another Lustre or any other type of file system.
  */
 int main(int argc, char *const argv[])
 {
@@ -62,10 +61,9 @@ int main(int argc, char *const argv[])
 	int rc;
 	int rc2 = 0;
 	const char *file;
-	struct option long_opts[] = LOND_UNLOCK_OPTIONS;
+	struct option long_opts[] = LOND_STAT_OPTIONS;
 	char *progname;
-	char *key = NULL;
-	char short_opts[] = "dhk:";
+	char short_opts[] = "dh";
 	struct stat file_sb;
 	bool recursive = true;
 	int c;
@@ -80,13 +78,6 @@ int main(int argc, char *const argv[])
 		case 'h':
 			usage(progname);
 			return 0;
-		case 'k':
-			key = optarg;
-			if (!is_valid_key(key)) {
-				LERROR("invalid key [%s]\n", key);
-				return -EINVAL;
-			}
-			break;
 		case 'd':
 			recursive = false;
 			break;
@@ -95,12 +86,6 @@ int main(int argc, char *const argv[])
 			usage(progname);
 			return -EINVAL;
 		}
-	}
-
-	if (key == NULL) {
-		LERROR("please specify lock key by using [-k] option\n");
-		usage(progname);
-		return -EINVAL;
 	}
 
 	if (argc < optind + 1) {
@@ -113,44 +98,36 @@ int main(int argc, char *const argv[])
 		file = argv[i];
 		rc = lstat(file, &file_sb);
 		if (rc) {
-			LERROR("failed to unlock [%s] because stat failed: %s\n",
+			LERROR("failed to lond_stat [%s] because stat failed: %s\n",
 			       file, strerror(errno));
 			rc2 = rc2 ? rc2 : rc;
 			continue;
 		}
 
 		if (!recursive || S_ISREG(file_sb.st_mode)) {
-			LINFO("unlocking inode [%s] with key [%s]\n", file,
-			      key);
-			rc = lond_inode_unlock(file, key, false);
+			rc = lond_inode_stat(file, NULL, file_sb.st_mode);
 			if (rc) {
-				LERROR("failed to unlock file [%s] with key [%s]: %s\n",
-				       file, key, strerror(errno));
+				LERROR("failed to lond stat file [%s]: %s\n",
+				       file, strerror(errno));
 				rc2 = rc2 ? rc2 : rc;
 				continue;
 			}
-			LINFO("unlocked inode [%s] with key [%s]\n", file,
-			      key);
 		} else if (S_ISDIR(file_sb.st_mode)) {
-			LINFO("unlocking directory tree [%s] with key [%s]\n",
-			      file, key);
 			rc = chdir(file);
 			if (rc) {
-				LERROR("failed to unlock tree [%s] with key [%s] because failed to chdir to it: %s\n",
-				       file, key, strerror(errno));
+				LERROR("failed to lond stat directory tree [%s] because failed to chdir to it: %s\n",
+				       file, strerror(errno));
 				rc2 = rc2 ? rc2 : rc;
 				continue;
 			}
 
-			rc = lond_tree_unlock(".", key, true);
+			rc = lond_tree_stat(".", true);
 			if (rc) {
-				LERROR("failed to unlock tree [%s] with key [%s]: %s\n",
-				       file, key, strerror(errno));
+				LERROR("failed to lond stat tree [%s]: %s\n",
+				       file, strerror(errno));
 				rc2 = rc2 ? rc2 : rc;
 				continue;
 			}
-			LINFO("unlocked directory tree [%s] with key [%s]\n",
-			      file, key);
 		} else {
 			LINFO("[%s] is not locked\n", file);
 		}

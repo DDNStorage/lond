@@ -24,9 +24,10 @@ def simple_usage():
     Print simple usage string
     """
     utils.eprint("  commands:\n"
-                 "    fetch     fetch dir from global Lustre to on demand Lustre\n"
-                 "    sync      sync dir from on demand Lustre to global Lustre\n"
-                 "    unlock    unlock global Lustre directory trees or files\n")
+                 "    fetch     fetch dirs from global Lustre to on demand Lustre\n"
+                 "    stat      show the lond status of dirs or files\n"
+                 "    sync      sync dirs from on demand Lustre to global Lustre\n"
+                 "    unlock    unlock global Lustre dirs or files\n")
 
 
 def usage():
@@ -55,6 +56,43 @@ class LondCommand(object):
 
 
 LOND_COMMANDS = {}
+
+
+def lond_command_common(command, interact, log, args):
+    # pylint: disable=too-many-locals,too-many-branches,too-many-statements
+    # pylint: disable=too-many-return-statements,unused-argument
+    """
+    Command command to run
+    """
+    hostname = socket.gethostname()
+    host = lustre.LustreServerHost(hostname, local=True)
+
+    command = common.c_command_path("lond_%s" % command)
+    command += " --%s %s" % (definition.LOND_OPTION_PROGNAME, command)
+    for arg in args[1:]:
+        command += " " + arg
+
+    args = {}
+    args[watched_io.WATCHEDIO_LOG] = log
+    args[watched_io.WATCHEDIO_HOSTNAME] = host.sh_hostname
+    stdout_fd = watched_io.watched_io_open("/dev/null",
+                                           watched_io.log_watcher_info_simplified,
+                                           args)
+    stderr_fd = watched_io.watched_io_open("/dev/null",
+                                           watched_io.log_watcher_error_simplified,
+                                           args)
+    log.cl_debug("start to run command [%s] on host [%s]",
+                 command, host.sh_hostname)
+    retval = host.sh_run(log, command, stdout_tee=stdout_fd,
+                         stderr_tee=stderr_fd, return_stdout=False,
+                         return_stderr=False, timeout=None, flush_tee=True)
+    stdout_fd.close()
+    stderr_fd.close()
+
+    return retval.cr_exit_status
+
+
+LOND_COMMNAD_FETCH = "fetch"
 
 
 def lond_command_fetch(interact, log, args):
@@ -131,34 +169,14 @@ def lond_command_fetch(interact, log, args):
             log.cl_info("started copytool from [%s] to [%s]", source_fsname, dest_fsname)
         cclient.cc_fini()
 
-    command = common.c_command_path("lond_fetch")
-    command += " --%s fetch" % definition.LOND_OPTION_PROGNAME
-    for arg in args[1:]:
-        command += " " + arg
+    return lond_command_common(LOND_COMMNAD_FETCH, interact, log, args)
 
-    args = {}
-    args[watched_io.WATCHEDIO_LOG] = log
-    args[watched_io.WATCHEDIO_HOSTNAME] = host.sh_hostname
-    stdout_fd = watched_io.watched_io_open("/dev/null",
-                                           watched_io.log_watcher_info_simplified,
-                                           args)
-    stderr_fd = watched_io.watched_io_open("/dev/null",
-                                           watched_io.log_watcher_error_simplified,
-                                           args)
-    log.cl_debug("start to run command [%s] on host [%s]",
-                 command, host.sh_hostname)
-    retval = host.sh_run(log, command, stdout_tee=stdout_fd,
-                         stderr_tee=stderr_fd, return_stdout=False,
-                         return_stderr=False, timeout=None, flush_tee=True)
-    stdout_fd.close()
-    stderr_fd.close()
-
-    return retval.cr_exit_status
-
-LOND_COMMNAD_FETCH = "fetch"
 LOND_COMMANDS[LOND_COMMNAD_FETCH] = \
     LondCommand(LOND_COMMNAD_FETCH, lond_command_fetch,
                 definition.LOND_FETCH_OPTIONS)
+
+
+LOND_COMMNAD_UNLOCK = "unlock"
 
 
 def lond_command_unlock(interact, log, args):
@@ -167,37 +185,28 @@ def lond_command_unlock(interact, log, args):
     """
     Unlock the file on global Lustre
     """
-    hostname = socket.gethostname()
-    host = lustre.LustreServerHost(hostname, local=True)
+    return lond_command_common(LOND_COMMNAD_UNLOCK, interact, log, args)
 
-    command = common.c_command_path("lond_unlock")
-    command += " --%s fetch" % definition.LOND_OPTION_PROGNAME
-    for arg in args[1:]:
-        command += " " + arg
 
-    args = {}
-    args[watched_io.WATCHEDIO_LOG] = log
-    args[watched_io.WATCHEDIO_HOSTNAME] = host.sh_hostname
-    stdout_fd = watched_io.watched_io_open("/dev/null",
-                                           watched_io.log_watcher_info_simplified,
-                                           args)
-    stderr_fd = watched_io.watched_io_open("/dev/null",
-                                           watched_io.log_watcher_error_simplified,
-                                           args)
-    log.cl_debug("start to run command [%s] on host [%s]",
-                 command, host.sh_hostname)
-    retval = host.sh_run(log, command, stdout_tee=stdout_fd,
-                         stderr_tee=stderr_fd, return_stdout=False,
-                         return_stderr=False, timeout=None, flush_tee=True)
-    stdout_fd.close()
-    stderr_fd.close()
-
-    return retval.cr_exit_status
-
-LOND_COMMNAD_UNLOCK = "unlock"
 LOND_COMMANDS[LOND_COMMNAD_UNLOCK] = \
     LondCommand(LOND_COMMNAD_UNLOCK, lond_command_unlock,
                 definition.LOND_UNLOCK_OPTIONS)
+
+
+LOND_COMMNAD_STAT = "stat"
+
+
+def lond_command_stat(interact, log, args):
+    # pylint: disable=too-many-locals,too-many-branches,too-many-statements
+    # pylint: disable=too-many-return-statements,unused-argument
+    """
+    Unlock the file on global Lustre
+    """
+    return lond_command_common(LOND_COMMNAD_STAT, interact, log, args)
+
+LOND_COMMANDS[LOND_COMMNAD_STAT] = \
+    LondCommand(LOND_COMMNAD_STAT, lond_command_stat,
+                definition.LOND_STAT_OPTIONS)
 
 
 def lond_command_help(interact, log, args):

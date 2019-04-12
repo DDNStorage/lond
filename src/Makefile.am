@@ -5,15 +5,17 @@ AM_CFLAGS = -Wall -Werror -g $(json_c_CFLAGS) $(json_c_LIBS) \
 	-llustreapi -lpthread
 
 sbin_PROGRAMS = lond_copytool
-bin_PROGRAMS = lond_fetch lond_unlock
+bin_PROGRAMS = lond_fetch lond_unlock lond_stat
 noinst_PROGRAMS = generate_definition
 
-lond_fetch_SOURCES = lond.h lond_common.c lond_fetch.c debug.c debug.h cmd.c \
-	cmd.h definition.h
-lond_unlock_SOURCES = lond.h lond_common.c lond_unlock.c debug.c debug.h cmd.c \
-	cmd.h definition.h 
 lond_copytool_SOURCES = lond_copytool.c lond.h debug.c debug.h \
-	definition.h
+	definition.h list.h
+lond_fetch_SOURCES = lond.h lond_common.c lond_fetch.c debug.c debug.h cmd.c \
+	cmd.h definition.h list.h
+lond_stat_SOURCES = lond.h lond_common.c lond_stat.c debug.c debug.h cmd.c \
+	cmd.h definition.h list.h
+lond_unlock_SOURCES = lond.h lond_common.c lond_unlock.c debug.c debug.h cmd.c \
+	cmd.h definition.h list.h
 generate_definition_SOURCES = generate_definition.c debug.c debug.h \
         definition.h
 

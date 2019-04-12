@@ -10,16 +10,21 @@
 #ifndef _LOND_H_
 #define _LOND_H_
 
+#include "list.h"
+
 #define XATTR_NAME_LOND_KEY	"trusted.lond_key"
 #define XATTR_NAME_LOND_HSM_FID "trusted.lond_hsm_fid"
 #define LOND_KEY_LENGH 10
 #define LOND_KEY_ANY "any"
 
 int lond_inode_lock(const char *fpath, const char *key);
-int lond_tree_unlock(const char *fpath, const char *key,
-		     bool ignore_error);
 int lond_inode_unlock(const char *fpath, const char *key,
 		      bool ignore_used_by_other);
+int lond_inode_stat(const char *fpath, struct lond_list_head *stack_list,
+		    mode_t mode);
+int lond_tree_unlock(const char *fpath, const char *key,
+		     bool ignore_error);
+int lond_tree_stat(const char *fpath, bool ignore_error);
 
 int generate_key(char *key, int buf_size);
 bool is_valid_key(const char *key);
