@@ -24,9 +24,9 @@ def simple_usage():
     Print simple usage string
     """
     utils.eprint("  commands:\n"
-                 "    fetch     fetch dirs from global Lustre to on demand Lustre\n"
+                 "    fetch     fetch dirs from global Lustre to local Lustre\n"
                  "    stat      show the lond status of dirs or files\n"
-                 "    sync      sync dirs from on demand Lustre to global Lustre\n"
+                 "    sync      sync dirs from local Lustre to global Lustre\n"
                  "    unlock    unlock global Lustre dirs or files\n")
 
 

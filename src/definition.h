@@ -75,15 +75,15 @@ enum {
 	     { .ca_type = ARG_TYPE_NONE }				\
 	  }								\
 	},								\
-	{ .co_name = "LOND_UNLOCK_OPTIONS",				\
-	  .co_options = LOND_UNLOCK_OPTIONS,				\
+	{ .co_name = "LOND_STAT_OPTIONS",				\
+	  .co_options = LOND_STAT_OPTIONS,				\
 	  .co_arguments = {						\
 	     { .ca_type = ARG_TYPE_FILE_PATH },				\
 	     { .ca_type = ARG_TYPE_NONE }				\
 	  }								\
 	},								\
-	{ .co_name = "LOND_STAT_OPTIONS",				\
-	  .co_options = LOND_STAT_OPTIONS,				\
+	{ .co_name = "LOND_UNLOCK_OPTIONS",				\
+	  .co_options = LOND_UNLOCK_OPTIONS,				\
 	  .co_arguments = {						\
 	     { .ca_type = ARG_TYPE_FILE_PATH },				\
 	     { .ca_type = ARG_TYPE_NONE }				\

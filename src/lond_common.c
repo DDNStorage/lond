@@ -24,9 +24,7 @@
 #include "lond.h"
 #include "list.h"
 
-const char *nftw_key;
-bool nftw_ignore_error;
-int nftw_errno;
+struct nftw_private nftw_private;
 
 static int check_inode_is_immutable(const char *fpath, bool *immutable)
 {
@@ -57,19 +55,69 @@ static int check_inode_is_immutable(const char *fpath, bool *immutable)
 	return 0;
 }
 
-/* Return negative value if failed to read */
-static int lond_read_key(const char *fpath, char *xattr_key, size_t buf_size,
-			 bool *has_xattr)
+static void parse_global_xattr(struct lond_global_xattr *global_xattr)
 {
 	int rc;
+	struct lond_global_xattr_disk *disk = &global_xattr->lgx_disk;
+	char *key_str = global_xattr->lgx_key_str;
 
-	*has_xattr = false;
-	rc = getxattr(fpath, XATTR_NAME_LOND_KEY, xattr_key, buf_size);
-	if (rc >= 0) {
-		xattr_key[LOND_KEY_LENGH] = '\0';
-		*has_xattr = true;
-	} else if (errno != ENOATTR) {
-		return -errno;
+	if (disk->lgxd_magic != LOND_MAGIC) {
+		snprintf(global_xattr->lgx_invalid_reason,
+			 sizeof(global_xattr->lgx_invalid_reason),
+			 "invalid magic [0x%x], expected [0x%x]",
+			 disk->lgxd_magic, LOND_MAGIC);
+		return;
+	}
+
+	if (disk->lgxd_version != LOND_VERSION) {
+		snprintf(global_xattr->lgx_invalid_reason,
+			 sizeof(global_xattr->lgx_invalid_reason),
+			 "invalid version [%d], expected [%d]",
+			 disk->lgxd_version, LOND_VERSION);
+		return;
+	}
+
+	rc = lond_key_get_string(&disk->lgxd_key, key_str,
+				 sizeof(global_xattr->lgx_key_str));
+	if (rc) {
+		snprintf(global_xattr->lgx_invalid_reason,
+			 sizeof(global_xattr->lgx_invalid_reason),
+			 "short buffer");
+		LERROR("failed to get the string of key\n");
+		return;
+	}
+	global_xattr->lgx_is_valid = true;
+}
+
+/* Return negative value if failed to read */
+static int lond_read_global_xattr(const char *fpath,
+				  struct lond_global_xattr *global_xattr)
+{
+	int rc;
+	struct lond_global_xattr_disk *disk = &global_xattr->lgx_disk;
+
+	memset(global_xattr, 0, sizeof(*global_xattr));
+	rc = getxattr(fpath, XATTR_NAME_LOND_GLOBAL, disk, sizeof(*disk));
+	if (rc == sizeof(*disk)) {
+		parse_global_xattr(global_xattr);
+		return 0;
+	} else if (rc < 0 && errno == ENOATTR) {
+		snprintf(global_xattr->lgx_invalid_reason,
+			 sizeof(global_xattr->lgx_invalid_reason),
+			 "no xattr of %s", XATTR_NAME_LOND_GLOBAL);
+		return 0;
+	} else if (rc < 0) {
+		snprintf(global_xattr->lgx_invalid_reason,
+			 sizeof(global_xattr->lgx_invalid_reason),
+			 "errno %d when reading xattr %s",
+			 errno, XATTR_NAME_LOND_GLOBAL);
+		return rc;
+	} else {
+		snprintf(global_xattr->lgx_invalid_reason,
+			 sizeof(global_xattr->lgx_invalid_reason),
+			 "short read of xattr %s",
+			 XATTR_NAME_LOND_GLOBAL);
+		return 0;
 	}
 	return 0;
 }
@@ -79,13 +127,12 @@ static int lond_read_key(const char *fpath, char *xattr_key, size_t buf_size,
  * Print the EPERM reason of an inode,
  * If the inode is locked by myself, return 0. Otherwise, negative value.
  */
-static int lond_lock_eperm_reason(const char *fpath, const char *key)
+static int lond_lock_eperm_reason(const char *fpath, const char *key_str)
 {
 	int rc;
 	bool immutable = false;
-	char xattr_key[LOND_KEY_LENGH + 1];
+	struct lond_global_xattr global_xattr;
 	char full_fpath[PATH_MAX];
-	bool has_xattr = false;
 
 	rc = get_full_fpath(fpath, full_fpath, PATH_MAX);
 	if (rc) {
@@ -105,34 +152,24 @@ static int lond_lock_eperm_reason(const char *fpath, const char *key)
 		return -EPERM;
 	}
 
-	rc = lond_read_key(fpath, xattr_key, LOND_KEY_LENGH + 1, &has_xattr);
+	rc = lond_read_global_xattr(fpath, &global_xattr);
 	if (rc) {
 		LERROR("failed to get lond key of immutable inode [%s]: %s\n",
 		       full_fpath, strerror(errno));
 		return rc;
 	}
 
-	if (!has_xattr) {
-		LERROR("immutable inode [%s] doesn't have any lond key\n",
-		       full_fpath);
+	if (!global_xattr.lgx_is_valid) {
+		LERROR("immutable inode [%s] doesn't have valid lond key: %s\n",
+		       full_fpath, global_xattr.lgx_invalid_reason);
 		LERROR("to cleanup, try [lond unlock -d -k %s %s]\n",
 		       LOND_KEY_ANY, full_fpath, full_fpath);
 		return -ENOATTR;
-	}
-
-	if (strcmp(xattr_key, key) == 0)
-		return 0;
-
-	if (is_valid_key(xattr_key)) {
-		LERROR("file [%s] has already been locked with key [%s]\n",
-		       full_fpath, xattr_key);
-		LERROR("to unlock, try [lond unlock -k %s %s]\n",
-		       xattr_key, full_fpath);
 	} else {
-		LERROR("file [%s] has already been locked with invalid key [%s]\n",
-		       full_fpath, xattr_key);
+		LERROR("inode [%s] has already been locked with key [%s]\n",
+		       full_fpath, global_xattr.lgx_key_str);
 		LERROR("to cleanup, try [lond unlock -d -k %s %s]\n",
-		       LOND_KEY_ANY, full_fpath);
+		       key_str, full_fpath);
 	}
 	return -EBUSY;
 }
@@ -145,15 +182,17 @@ static int lond_lock_eperm_reason(const char *fpath, const char *key)
  * 3) If 2) fails because the flag already exists, ignore the failure.
  * 4) Check whether the xattr has expected value, if not, return failure
  */
-int lond_inode_lock(const char *fpath, const char *key)
+int lond_inode_lock(const char *fpath, struct lond_key *key, bool is_root)
 {
 	int rc;
 	int rc2;
 	char cmd[PATH_MAX];
 	int cmdsz = sizeof(cmd);
-	char xattr_key[LOND_KEY_LENGH + 1];
+	struct lond_global_xattr set_xattr;
+	struct lond_global_xattr get_xattr;
 	char full_fpath[PATH_MAX];
-	bool has_xattr = false;
+	char *key_str = set_xattr.lgx_key_str;
+	struct lond_global_xattr_disk *disk = &set_xattr.lgx_disk;
 
 	rc = get_full_fpath(fpath, full_fpath, PATH_MAX);
 	if (rc) {
@@ -161,17 +200,29 @@ int lond_inode_lock(const char *fpath, const char *key)
 		return rc;
 	}
 
-	rc = setxattr(fpath, XATTR_NAME_LOND_KEY, key, LOND_KEY_LENGH,
+	set_xattr.lgx_is_valid = true;
+	rc = lond_key_get_string(key, key_str, sizeof(set_xattr.lgx_key_str));
+	if (rc) {
+		LERROR("failed to get string of key\n");
+		return rc;
+	}
+	memcpy(&disk->lgxd_key, key, sizeof(*key));
+	disk->lgxd_is_root = is_root;
+	disk->lgxd_magic = LOND_MAGIC;
+	disk->lgxd_version = LOND_VERSION;
+
+	rc = setxattr(fpath, XATTR_NAME_LOND_GLOBAL, disk, sizeof(*disk),
 		      0);
 	if (rc) {
 		rc2 = -errno;
 		if (errno == EPERM) {
-			rc = lond_lock_eperm_reason(fpath, key);
+			rc = lond_lock_eperm_reason(fpath, key_str);
 			if (rc == 0)
 				return 0;
+		} else {
+			LERROR("failed to set lock key of [%s] to [%s]: %s\n",
+			       full_fpath, key_str, strerror(errno));
 		}
-		LERROR("failed to set lock key of [%s] to [%s]: %s\n",
-		       full_fpath, key, strerror(errno));
 		return rc2;
 	}
 
@@ -183,27 +234,29 @@ int lond_inode_lock(const char *fpath, const char *key)
 		return rc;
 	}
 
-	rc = lond_read_key(fpath, xattr_key, LOND_KEY_LENGH + 1, &has_xattr);
+	rc = lond_read_global_xattr(fpath, &get_xattr);
 	if (rc) {
 		LERROR("failed to get lond key of immutable inode [%s]: %s\n",
 		       full_fpath, strerror(errno));
 		return rc;
 	}
 
-	if (!has_xattr) {
-		LERROR("race of inode [%s], expected key [%s], got no key\n",
-		       full_fpath, key, xattr_key);
+	if (!get_xattr.lgx_is_valid) {
+		LERROR("race of inode [%s] when locking with key [%s], got invalid key: %s\n",
+		       full_fpath, key_str, get_xattr.lgx_invalid_reason);
+		LERROR("is it being used by other tools?\n");
 		LERROR("to cleanup, try [lond unlock -d -k %s %s]\n",
 		       LOND_KEY_ANY, full_fpath, full_fpath);
 		return -ENOATTR;
+	} else if (memcmp(&get_xattr.lgx_disk.lgxd_key, key,
+			  sizeof(struct lond_key)) != 0) {
+		LERROR("race of inode [%s] from another lock, expected key [%s], got key [%s]\n",
+		       full_fpath, key_str, get_xattr.lgx_key_str);
+		LERROR("to cleanup, try [lond unlock -d -k %s %s]\n",
+		       key_str, full_fpath);
+		return -EBUSY;
 	}
 
-	if (strcmp(xattr_key, key) != 0) {
-		LERROR("race of inode [%s] from another lock, expected key [%s], got key [%s]\n",
-		       full_fpath, key, xattr_key);
-		return -1;
-	}
-	LDEBUG("set immutable flag [%s]\n", full_fpath);
 	return 0;
 }
 
@@ -215,23 +268,33 @@ int lond_inode_lock(const char *fpath, const char *key)
  * 2) Read the xattr.
  * 3) If the xattr matches the key, chattr -i
  */
-int lond_inode_unlock(const char *fpath, const char *key,
+int lond_inode_unlock(const char *fpath, bool any_key, struct lond_key *key,
 		      bool ignore_used_by_other)
 {
 	int rc;
 	char cmd[PATH_MAX];
 	int cmdsz = sizeof(cmd);
 	bool immutable = false;
-	char xattr_key[LOND_KEY_LENGH + 1];
+	struct lond_global_xattr global_xattr;
 	char full_fpath[PATH_MAX];
-	bool has_xattr = false;
+	char key_str[LOND_KEY_STRING_SIZE];
+
+	if (any_key) {
+		snprintf(key_str, sizeof(key_str), LOND_KEY_ANY);
+	} else {
+		rc = lond_key_get_string(key, key_str, sizeof(key_str));
+		if (rc) {
+			LERROR("failed to get string of key\n");
+			return rc;
+		}
+	}
 
 	rc = get_full_fpath(fpath, full_fpath, PATH_MAX);
 	if (rc) {
 		LERROR("failed to get full path of [%s]\n", fpath);
 		return rc;
 	}
-	LDEBUG("unlocking inode [%s]\n", full_fpath);
+	LDEBUG("unlocking inode [%s] with key [%s]\n", full_fpath, key_str);
 
 	rc = check_inode_is_immutable(fpath, &immutable);
 	if (rc) {
@@ -242,44 +305,38 @@ int lond_inode_unlock(const char *fpath, const char *key,
 
 	if (!immutable) {
 		LDEBUG("inode [%s] is not immutable, skipping unlocking\n",
-		       full_fpath);
+		      full_fpath);
 		return 0;
 	}
 
-	if (strcmp(key, LOND_KEY_ANY) != 0) {
-		rc = lond_read_key(fpath, xattr_key, LOND_KEY_LENGH + 1,
-				   &has_xattr);
+	if (!any_key) {
+		rc = lond_read_global_xattr(fpath, &global_xattr);
 		if (rc) {
 			LERROR("failed to get lond key of immutable inode [%s]: %s\n",
 			       full_fpath, strerror(errno));
 			return rc;
 		}
 
-		if (!has_xattr) {
-			LERROR("immutable inode [%s] doesn't have any lond key\n",
-			       full_fpath);
+		if (!global_xattr.lgx_is_valid) {
+			LERROR("immutable inode [%s] doesn't have valid lond key: %s\n",
+			       full_fpath, global_xattr.lgx_invalid_reason);
 			LERROR("to cleanup, try [lond unlock -d -k %s %s]\n",
 			       LOND_KEY_ANY, full_fpath, full_fpath);
 			return -ENOATTR;
-		}
-
-		if (!is_valid_key(xattr_key)) {
-			LERROR("inode [%s] is being locked with invalid key [%s]\n",
-			       full_fpath, xattr_key);
-			LERROR("to cleanup, try [lond unlock -d -k %s %s]\n",
-			       LOND_KEY_ANY, full_fpath, full_fpath);
-			return -1;
-		}
-
-		if (strcmp(xattr_key, key) != 0) {
+		} else if (memcmp(&global_xattr.lgx_disk.lgxd_key, key,
+				  sizeof(struct lond_key)) != 0) {
 			if (ignore_used_by_other) {
 				LDEBUG("inode [%s] is being locked with key [%s] not [%s]\n",
-				       full_fpath, xattr_key, key);
+				      full_fpath, global_xattr.lgx_key_str,
+				      key_str);
 				return 0;
 			} else {
 				LERROR("inode [%s] is being locked with key [%s] not [%s]\n",
-				       full_fpath, xattr_key, key);
-				return -1;
+				       full_fpath, global_xattr.lgx_key_str,
+				       key_str);
+				LERROR("to cleanup, try [lond unlock -d -k %s %s]\n",
+				       key_str, full_fpath);
+				return -EBUSY;
 			}
 		}
 	}
@@ -300,21 +357,32 @@ static int nftw_unlock_fn(const char *fpath, const struct stat *sb,
 			  int tflag, struct FTW *ftwbuf)
 {
 	int rc;
+	struct nftw_private_unlock *unlock = &nftw_private.u.np_unlock;
+	bool any_key = unlock->npu_any_key;
+	struct lond_key *key = unlock->npu_key;
+	char full_fpath[PATH_MAX];
 
 	/* Only set regular files and directories to immutable */
 	if (!S_ISREG(sb->st_mode) && !S_ISDIR(sb->st_mode))
 		return 0;
 
-	/* Lock the inode first before copying to dest */
-	rc = lond_inode_unlock(fpath, nftw_key, true);
+	rc = get_full_fpath(fpath, full_fpath, PATH_MAX);
 	if (rc) {
-		nftw_errno = rc;
-		if (!nftw_ignore_error) {
-			LERROR("failed to unlock file [%s], aborting\n", fpath);
+		LERROR("failed to get full path of [%s]\n", fpath);
+		return rc;
+	}
+
+	/* Lock the inode first before copying to dest */
+	rc = lond_inode_unlock(fpath, any_key, key, true);
+	if (rc) {
+		nftw_private.np_errno = rc;
+		if (!nftw_private.np_ignore_error) {
+			LERROR("failed to unlock file [%s], aborting\n",
+			       full_fpath);
 			return rc;
 		} else {
 			LERROR("failed to unlock file [%s], continue unlocking\n",
-			       fpath);
+			       full_fpath);
 			return 0;
 		}
 	}
@@ -361,12 +429,13 @@ int get_full_fpath(const char *fpath, char *full_fpath, size_t buf_size)
 	return 0;
 }
 
-int lond_tree_unlock(const char *fpath, const char *key,
+int lond_tree_unlock(const char *fpath, bool any_key, struct lond_key *key,
 		     bool ignore_error)
 {
 	int rc;
 	int flags = FTW_PHYS;
 	char full_fpath[PATH_MAX];
+	char key_str[LOND_KEY_STRING_SIZE];
 
 	rc = get_full_fpath(fpath, full_fpath, PATH_MAX);
 	if (rc) {
@@ -374,89 +443,71 @@ int lond_tree_unlock(const char *fpath, const char *key,
 		return rc;
 	}
 
+	if (!any_key) {
+		rc = lond_key_get_string(key, key_str, sizeof(key_str));
+		if (rc) {
+			LERROR("failed to get string of key\n");
+			return rc;
+		}
+	} else {
+		snprintf(key_str, sizeof(key_str), LOND_KEY_ANY);
+	}
+
 	/*
 	 * There is no way to transfer the argument into nftw_unlock_fn,
 	 * thus use global variable to do that. This means, this is not
 	 * thread-safe.
 	 */
-	nftw_key = key;
-	nftw_ignore_error = ignore_error;
-	nftw_errno = 0;
+	nftw_private.u.np_unlock.npu_any_key = any_key;
+	nftw_private.u.np_unlock.npu_key = key;
+	nftw_private.np_ignore_error = ignore_error;
+	nftw_private.np_errno = 0;
 	rc = nftw(fpath, nftw_unlock_fn, 32, flags);
 	if (rc) {
 		LERROR("failed to unlock directory tree [%s] with key [%s]\n",
-		       full_fpath, key);
+		       full_fpath, key_str);
 		return rc;
 	}
 
-	if (nftw_errno) {
+	if (nftw_private.np_errno) {
 		LERROR("got error when unlocking directory tree [%s] with key [%s]\n",
-		       full_fpath, key);
-		rc = nftw_errno;
+		       full_fpath, key_str);
+		rc = nftw_private.np_errno;
 	} else {
 		LINFO("unlocked directory tree [%s] with key [%s]\n",
-		      full_fpath, key);
+		      full_fpath, key_str);
 	}
 	return rc;
 }
 
-static const char alphabet[] =
-"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-
-/* Return a random int smaller than n */
-static int random_int(int n)
-{
-	return rand() % n;
-}
-
-/* Fill the string with random */
-static void randomize_string(char *string, int buf_size)
+void lond_key_generate(struct lond_key *key)
 {
 	int i;
+	unsigned char value;
 
-	LASSERT(buf_size > 1);
-	for (i = 0; i < buf_size - 1; i++)
-		string[i] = alphabet[random_int(strlen(alphabet))];
-	string[buf_size - 1] = '\0';
+	for (i = 0; i < LOND_KEY_ARRAY_LENGH; i++) {
+		value = rand() % 256;
+		key->lk_key[i] = value;
+	}
 }
 
-int generate_key(char *key, int buf_size)
+int lond_key_get_string(struct lond_key *key, char *buffer, size_t buffer_size)
 {
-	if (buf_size <= LOND_KEY_LENGH) {
-		LERROR("failed to generated lock key because of short buffer, expected [%d], got [%d]\n",
-		       LOND_KEY_LENGH + 1, buf_size);
-		return -1;
+	char *ptr;
+	int i;
+
+	if (buffer_size < LOND_KEY_STRING_SIZE) {
+		LERROR("buffer size [%d] is too short, expected [%d]\n",
+		       buffer_size, LOND_KEY_STRING_SIZE);
+		return -EINVAL;
 	}
-	randomize_string(key, buf_size);
+
+	ptr = buffer;
+	for (i = 0; i < LOND_KEY_ARRAY_LENGH; i++) {
+		sprintf(ptr, "%02x", key->lk_key[i]);
+		ptr += 2;
+	}
 	return 0;
-}
-
-bool is_valid_key(const char *key)
-{
-	int i;
-
-	if (strcmp(key, LOND_KEY_ANY) == 0)
-		return true;
-
-	if (strlen(key) != LOND_KEY_LENGH) {
-		LDEBUG("invalid lock key length, expected [%d], got [%d]\n",
-		       LOND_KEY_LENGH, strlen(key));
-		return false;
-	}
-
-	for (i = 0; i < LOND_KEY_LENGH; i++) {
-		if (key[i] >= 'a' && key[i] <= 'z')
-			continue;
-		if (key[i] >= 'A' && key[i] <= 'Z')
-			continue;
-		if (key[i] >= '0' && key[i] <= '9')
-			continue;
-		LDEBUG("invalid lock char [%c] in key [%s]\n",
-		       key[i], key);
-		return false;
-	}
-
-	return true;
 }
 
 LOND_LIST_HEAD(nftw_stat_stack);
@@ -468,10 +519,8 @@ struct lond_stat_entry {
 	char					lse_path[PATH_MAX];
 	/* Whether this inode is immutable */
 	bool					lse_immutable;
-	/* Whether this inode has xattr of lond key */
-	bool					lse_has_xattr;
-	/* Key of this entry */
-	char					lse_key[LOND_KEY_LENGH + 1];
+	/* Global xattr of this entry */
+	struct lond_global_xattr		lse_global_xattr;
 };
 
 static void stat_stack_push(struct lond_list_head *stack_list,
@@ -518,11 +567,12 @@ static void stat_stack_free(struct lond_list_head *stack_list)
 }
 
 static void print_inode_stat(const char *full_fpath, mode_t mode,
-			     bool immutable, bool has_xattr,
-			     const char *xattr_key,
+			     bool immutable,
+			     struct lond_global_xattr *global_xattr,
 			     struct lond_stat_entry *parent)
 {
 	const char *type;
+	struct lond_global_xattr *parent_xattr = &parent->lse_global_xattr;
 
 	if (S_ISDIR(mode))
 		type = "directory";
@@ -531,15 +581,14 @@ static void print_inode_stat(const char *full_fpath, mode_t mode,
 
 	if (!immutable) {
 		if (parent && parent->lse_immutable) {
-			if (!parent->lse_has_xattr)
-				LERROR("%s [%s] is not locked by lond, but its parent is immutable with no lock key\n",
-				       type, full_fpath);
-			else if (!is_valid_key(parent->lse_key))
-				LERROR("%s [%s] is not locked by lond, but its parent is locked with invalid key [%s]\n",
-				       type, full_fpath, parent->lse_key);
+			if (!parent_xattr->lgx_is_valid)
+				LERROR("%s [%s] is not locked by lond, but its parent is locked with invalid key (%s)\n",
+				       type, full_fpath,
+				       parent_xattr->lgx_invalid_reason);
 			else
 				LERROR("%s [%s] is not locked by lond, but its parent is locked with key [%s]\n",
-				       type, full_fpath, parent->lse_key);
+				       type, full_fpath,
+				       parent_xattr->lgx_key_str);
 		} else {
 			LINFO("%s [%s] is not locked by lond\n", type,
 			      full_fpath);
@@ -547,41 +596,43 @@ static void print_inode_stat(const char *full_fpath, mode_t mode,
 		return;
 	}
 
-	if (!has_xattr) {
-		LERROR("%s [%s] has no lock key but is immutable, please run [lond unlock -d -k %s %s] to cleanup\n",
-		       type, full_fpath, LOND_KEY_ANY, full_fpath);
-		return;
-	}
-
-	if (is_valid_key(xattr_key)) {
+	if (global_xattr->lgx_is_valid) {
 		if ((!parent) || (!parent->lse_immutable))
 			LINFO("%s [%s] is locked with key [%s]\n",
-			      type, full_fpath, xattr_key);
-		else if (strcmp(xattr_key, parent->lse_key) != 0)
+			      type, full_fpath, global_xattr->lgx_key_str);
+		else if (memcmp(&global_xattr->lgx_disk.lgxd_key,
+				&parent->lse_global_xattr.lgx_disk.lgxd_key,
+				sizeof(struct lond_key)) != 0)
 			LERROR("%s [%s] is locked with key [%s], but its parent is locked with key [%s]\n",
-			       type, full_fpath, xattr_key, parent->lse_key);
+			       type, full_fpath, global_xattr->lgx_key_str,
+			       parent->lse_global_xattr.lgx_key_str);
 	} else {
-		LERROR("%s [%s] is locked with invalid key [%s], please run [lond unlock -d -k %s %s] to cleanup\n",
-		       type, full_fpath, xattr_key, LOND_KEY_ANY, full_fpath);
+		LERROR("%s [%s] is locked with invalid key (%s), please run [lond unlock -d -k %s %s] to cleanup\n",
+		       type, full_fpath, global_xattr->lgx_invalid_reason,
+		       LOND_KEY_ANY, full_fpath);
 	}
 }
 
 /* Update the stat stack during the scanning process */
 static int stat_stack_update(struct lond_list_head *stack_list,
 			     const char *fpath, const char *full_fpath,
-			     mode_t mode, bool immutable, bool has_xattr,
-			     const char *xattr_key)
+			     mode_t mode, bool immutable,
+			     struct lond_global_xattr *global_xattr)
 {
 	struct lond_stat_entry *entry;
 	struct lond_stat_entry *top;
 	struct lond_stat_entry *parent = NULL;
+	struct lond_global_xattr *parent_xattr;
+	struct lond_key *parent_key;
+	struct lond_key *key;
 	char parent_path[PATH_MAX + 1];
+	bool need_print;
 
 	top = stat_stack_top(stack_list);
 	/* This is the root directory to scan, just print its status */
 	if (top == NULL)
-		print_inode_stat(full_fpath, mode, immutable, has_xattr,
-				 xattr_key, NULL);
+		print_inode_stat(full_fpath, mode, immutable, global_xattr,
+				 NULL);
 
 	entry = calloc(sizeof(*entry), 1);
 	if (entry == NULL) {
@@ -591,10 +642,9 @@ static int stat_stack_update(struct lond_list_head *stack_list,
 
 	strncpy(entry->lse_path, fpath, sizeof(entry->lse_path));
 	entry->lse_immutable = immutable;
-	if (immutable) {
-		entry->lse_has_xattr = has_xattr;
-		strncpy(entry->lse_key, xattr_key, sizeof(entry->lse_key));
-	}
+	if (immutable)
+		memcpy(&entry->lse_global_xattr, global_xattr,
+		       sizeof(*global_xattr));
 
 	if (top == NULL) {
 		stat_stack_push(stack_list, entry);
@@ -622,12 +672,28 @@ static int stat_stack_update(struct lond_list_head *stack_list,
 		return -1;
 	}
 
-	if (entry->lse_immutable != parent->lse_immutable ||
-	    entry->lse_has_xattr != parent->lse_has_xattr ||
-	    (strcmp(entry->lse_key, parent->lse_key) != 0)) {
-		print_inode_stat(full_fpath, mode, immutable, has_xattr,
-				 xattr_key, parent);
+	parent_xattr = &parent->lse_global_xattr;
+	parent_key = &parent_xattr->lgx_disk.lgxd_key;
+	key = &global_xattr->lgx_disk.lgxd_key;
+
+	need_print = false;
+	if (!entry->lse_immutable) {
+		if (parent->lse_immutable)
+			need_print = true;
+	} else if (!parent->lse_immutable) {
+		need_print = true;
+	} else if (!global_xattr->lgx_is_valid) {
+		if (parent_xattr->lgx_is_valid)
+			need_print = true;
+	} else if (!parent_xattr->lgx_is_valid) {
+		need_print = true;
+	} else if (memcmp(key, parent_key, sizeof(struct lond_key)) != 0) {
+		need_print = true;
 	}
+
+	if (need_print)
+		print_inode_stat(full_fpath, mode, immutable, global_xattr,
+				 parent);
 
 	stat_stack_push(stack_list, entry);
 	return 0;
@@ -638,9 +704,8 @@ int lond_inode_stat(const char *fpath, struct lond_list_head *stack_list,
 {
 	int rc;
 	bool immutable = false;
-	char xattr_key[LOND_KEY_LENGH + 1];
+	struct lond_global_xattr global_xattr;
 	char full_fpath[PATH_MAX];
-	bool has_xattr = false;
 
 	rc = get_full_fpath(fpath, full_fpath, PATH_MAX);
 	if (rc) {
@@ -656,10 +721,8 @@ int lond_inode_stat(const char *fpath, struct lond_list_head *stack_list,
 		return rc;
 	}
 
-	xattr_key[0] = '\0';
 	if (immutable) {
-		rc = lond_read_key(fpath, xattr_key, LOND_KEY_LENGH + 1,
-				   &has_xattr);
+		rc = lond_read_global_xattr(fpath, &global_xattr);
 		if (rc) {
 			LERROR("failed to get lond key of immutable inode [%s]: %s\n",
 			       full_fpath, strerror(errno));
@@ -669,14 +732,14 @@ int lond_inode_stat(const char *fpath, struct lond_list_head *stack_list,
 
 	if (stack_list) {
 		rc = stat_stack_update(stack_list, fpath, full_fpath,
-				       mode, immutable, has_xattr, xattr_key);
+				       mode, immutable, &global_xattr);
 		if (rc) {
 			LERROR("failed to update the stat stack\n");
 			return rc;
 		}
 	} else {
-		print_inode_stat(full_fpath, mode, immutable, has_xattr,
-				 xattr_key, NULL);
+		print_inode_stat(full_fpath, mode, immutable, &global_xattr,
+				 NULL);
 	}
 
 	return rc;
@@ -694,8 +757,8 @@ static int nftw_stat_fn(const char *fpath, const struct stat *sb,
 
 	rc = lond_inode_stat(fpath, &nftw_stat_stack, sb->st_mode);
 	if (rc) {
-		nftw_errno = rc;
-		if (!nftw_ignore_error) {
+		nftw_private.np_errno = rc;
+		if (!nftw_private.np_ignore_error) {
 			LERROR("failed to stat file [%s], aborting\n", fpath);
 			return rc;
 		} else {
@@ -738,8 +801,8 @@ int lond_tree_stat(const char *fpath, bool ignore_error)
 	 * thus use global variable to do that. This means, this is not
 	 * thread-safe.
 	 */
-	nftw_ignore_error = ignore_error;
-	nftw_errno = 0;
+	nftw_private.np_ignore_error = ignore_error;
+	nftw_private.np_errno = 0;
 	LOND_INIT_LIST_HEAD(&nftw_stat_stack);
 	rc = nftw(fpath, nftw_stat_fn, 32, flags);
 	stat_stack_free(&nftw_stat_stack);
@@ -749,7 +812,7 @@ int lond_tree_stat(const char *fpath, bool ignore_error)
 		return rc;
 	}
 
-	if (nftw_errno)
-		rc = nftw_errno;
+	if (nftw_private.np_errno)
+		rc = nftw_private.np_errno;
 	return rc;
 }

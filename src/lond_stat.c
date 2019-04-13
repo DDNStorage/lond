@@ -3,37 +3,20 @@
  */
 /*
  *
- * Tool for Lustre On Demand.
+ * Stat dir or file on globbal Lustre.
  *
  * Author: Li Xi <lixi@ddn.com>
  */
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
-#include <unistd.h>
-#include <getopt.h>
-#include <linux/limits.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <attr/xattr.h>
-#include <fcntl.h>
-#include <libgen.h>
 #include <unistd.h>
-#include <stdlib.h>
 #include <string.h>
-#include <errno.h>
-#include <ftw.h>
-#include <uthash.h>
-#include <inttypes.h>
-#ifdef NEW_USER_HEADER
-#include <linux/lustre/lustre_user.h>
-#else
-#include <lustre/lustre_user.h>
-#endif
-#include <lustre/lustreapi.h>
 #include "definition.h"
 #include "debug.h"
-#include "cmd.h"
 #include "lond.h"
 
 struct dest_entry *dest_entry_table;

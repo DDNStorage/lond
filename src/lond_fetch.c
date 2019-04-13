@@ -23,7 +23,6 @@
 #include <string.h>
 #include <errno.h>
 #include <ftw.h>
-#include <uthash.h>
 #include <inttypes.h>
 #ifdef NEW_USER_HEADER
 #include <linux/lustre/lustre_user.h>
@@ -36,46 +35,12 @@
 #include "cmd.h"
 #include "lond.h"
 
-/* The dest directory to copy to */
-char *dest;
-/* The dest directory that contains the source basename */
-char dest_source_dir[PATH_MAX];
-char global_key[LOND_KEY_LENGH + 1];
-__u32 archive_id = 1;
-/*
- * Use ST_DEV and ST_INO as the key, FILENAME as the value.
- * These are used to associate the destination name with the source
- * device/inode pair so that if we encounter a matching dev/ino
- * pair in the source tree we can arrange to create a hard link between
- * the corresponding names in the destination tree.
- */
-struct dest_entry {
-	/*
-	 * 2^64 = 18446744073709551616
-	 *        12345678901234567890
-	 */
-	char	 de_key[10 * 2 + 2];
-	ino_t	 de_ino;
-	dev_t	 de_dev;
-	/*
-	 * Destination file name corresponding to the dev/ino of a copied file
-	 */
-	char	*de_fpath;
-	/*
-	 * Makes this structure hashable. Donot change this function name from
-	 * @hh to something else since HASH_xxx macros reply on this name.
-	 */
-	UT_hash_handle hh;
-};
-
-struct dest_entry *dest_entry_table;
-
 static void usage(const char *prog)
 {
 	fprintf(stderr,
 		"Usage: %s <source>... <dest>\n"
-		"  source: Lustre directory tree to fetch\n"
-		"  dest: target Lustre directory\n",
+		"  source: global Lustre directory tree to fetch from\n"
+		"  dest: local Lustre directory to fetch to\n",
 		prog);
 }
 
@@ -121,7 +86,7 @@ static int create_stub_reg(char const *src_name, char const *dst_name,
 	}
 
 	rc = llapi_hsm_state_set_fd(dest_desc, HS_EXISTS | HS_ARCHIVED, 0,
-				    archive_id);
+				    nftw_private.u.np_fetch.npf_archive_id);
 	if (rc) {
 		LERROR("failed to set the HSM state of file [%s]: %s\n",
 		       dst_name, strerror(errno));
@@ -262,7 +227,8 @@ void free_dest_table(struct dest_entry **head)
 /* 07777 */
 #define CHMOD_MODE_BITS (S_ISUID|S_ISGID|S_ISVTX|S_IRWXU|S_IRWXG|S_IRWXO)
 
-static int create_stub_inode(const char *src_name, const char *dst_name)
+static int create_stub_inode(struct dest_entry **head, const char *src_name,
+			     const char *dst_name)
 {
 	int rc;
 	struct stat src_sb;
@@ -288,7 +254,7 @@ static int create_stub_inode(const char *src_name, const char *dst_name)
 
 	src_mode = src_sb.st_mode;
 	if (!S_ISDIR(src_mode) && src_sb.st_nlink > 1) {
-		rc = remember_copied(&dest_entry_table, dst_name,
+		rc = remember_copied(head, dst_name,
 				     src_sb.st_ino, src_sb.st_dev,
 				     &earlier_entry);
 		if (rc) {
@@ -432,8 +398,8 @@ static int create_stub_inode(const char *src_name, const char *dst_name)
 }
 
 /* The function of nftw() to creat stub file */
-static int nftw_create_stub_fn(const char *fpath, const struct stat *sb,
-			       int tflag, struct FTW *ftwbuf)
+static int nftw_fetch_fn(const char *fpath, const struct stat *sb,
+			 int tflag, struct FTW *ftwbuf)
 {
 	int rc;
 	char *cwd;
@@ -443,6 +409,15 @@ static int nftw_create_stub_fn(const char *fpath, const struct stat *sb,
 	char dest_dir[PATH_MAX];
 	int dest_dir_size = sizeof(dest_dir);
 	char full_fpath[PATH_MAX];
+	/* The dest directory that contains the source basename */
+	char *dest_source_dir = nftw_private.u.np_fetch.npf_dest_source_dir;
+	int dest_source_size;
+	char *dest = nftw_private.u.np_fetch.npf_dest;
+	struct dest_entry **head;
+	bool is_root = (strlen(fpath) == 1 && fpath[0] == '.');
+
+	dest_source_size = sizeof(nftw_private.u.np_fetch.npf_dest_source_dir);
+	head = &nftw_private.u.np_fetch.npf_dest_entry_table;
 
 	rc = get_full_fpath(fpath, full_fpath, PATH_MAX);
 	if (rc) {
@@ -461,7 +436,8 @@ static int nftw_create_stub_fn(const char *fpath, const struct stat *sb,
 	/* Only set directory and regular file to immutable */
 	if (S_ISREG(sb->st_mode) || S_ISDIR(sb->st_mode)) {
 		/* Lock the inode first before copying to dest */
-		rc = lond_inode_lock(fpath, global_key);
+		rc = lond_inode_lock(fpath, nftw_private.u.np_fetch.npf_key,
+				     is_root);
 		if (rc) {
 			LERROR("failed to lock file [%s]\n", full_fpath);
 			return rc;
@@ -474,21 +450,25 @@ static int nftw_create_stub_fn(const char *fpath, const struct stat *sb,
 		return -errno;
 	}
 
-	if (strlen(fpath) == 1 && fpath[0] == '.') {
+	if (is_root) {
 		base = basename(cwd);
 		if (strlen(dest) == 1) {
-			LASSERT(dest[0] == '/');
-			snprintf(dest_source_dir, sizeof(dest_source_dir),
-				 "/%s", base);
+			if (dest[0] != '/') {
+				LERROR("unexpected dest [%s], expected [/]\n",
+				       dest);
+				return -EINVAL;
+			}
+			snprintf(dest_source_dir, dest_source_size, "/%s",
+				 base);
 		} else {
-			snprintf(dest_source_dir, sizeof(dest_source_dir),
-				 "%s/%s", dest, base);
+			snprintf(dest_source_dir, dest_source_size, "%s/%s",
+				 dest, base);
 		}
-		rc = create_stub_inode(fpath, dest_source_dir);
+		rc = create_stub_inode(head, fpath, dest_source_dir);
 	} else {
 		snprintf(dest_dir, dest_dir_size, "%s/%s", dest_source_dir,
 			 fpath);
-		rc = create_stub_inode(fpath, dest_dir);
+		rc = create_stub_inode(head, fpath, dest_dir);
 	}
 
 	if (rc) {
@@ -506,7 +486,7 @@ static int relative_path2absolute(char *path, int buf_size)
 	char cwd_buf[PATH_MAX];
 	int cwdsz = sizeof(cwd_buf);
 
-	if (dest[0] == '/')
+	if (path[0] == '/')
 		return 0;
 
 	cwd = getcwd(cwd_buf, cwdsz);
@@ -541,11 +521,13 @@ int main(int argc, char *const argv[])
 	int rc2 = 0;
 	const char *source;
 	int flags = FTW_PHYS;
-	char dest_buf[PATH_MAX];
-	int dest_buf_size = sizeof(dest_buf);
+	char *dest = nftw_private.u.np_fetch.npf_dest;
+	int dest_size = sizeof(nftw_private.u.np_fetch.npf_dest);
 	struct option long_opts[] = LOND_FETCH_OPTIONS;
 	char *progname;
 	char short_opts[] = "h";
+	char key_str[LOND_KEY_STRING_SIZE];
+	struct lond_key key;
 	int c;
 
 	progname = argv[0];
@@ -568,14 +550,15 @@ int main(int argc, char *const argv[])
 	if (argc < optind + 2)
 		usage(progname);
 
-	rc = generate_key(global_key, sizeof(global_key));
+	lond_key_generate(&key);
+	rc = lond_key_get_string(&key, key_str, sizeof(key_str));
 	if (rc) {
-		LERROR("failed to generate lock key\n");
+		LERROR("failed to get the string of key\n");
 		return rc;
 	}
 
-	dest = dest_buf;
-	strncpy(dest_buf, argv[argc - 1], dest_buf_size);
+	strncpy(dest, argv[argc - 1], dest_size);
+	/* Remove the '/'s in the tail */
 	for (i = strlen(dest) - 1; i > 0; i--) {
 		if (dest[i] == '/')
 			dest[i] = '\0';
@@ -584,16 +567,18 @@ int main(int argc, char *const argv[])
 	}
 	if (strlen(dest) <= 0)
 		usage(progname);
-	rc = relative_path2absolute(dest, dest_buf_size);
+	rc = relative_path2absolute(dest, dest_size);
 	if (rc) {
 		LERROR("failed to get absolute path of target [%s]\n", dest);
 		return rc;
 	}
 
+	nftw_private.u.np_fetch.npf_key = &key;
+	nftw_private.u.np_fetch.npf_archive_id = 1;
 	for (i = optind; i < argc - 1; i++) {
 		source = argv[i];
 		LINFO("fetching directory [%s] to target [%s] with lock key [%s]\n",
-		      source, dest, global_key);
+		      source, dest, key_str);
 		rc = chdir(source);
 		if (rc) {
 			LERROR("failed to chdir to [%s]: %s\n", source,
@@ -602,23 +587,23 @@ int main(int argc, char *const argv[])
 			continue;
 		}
 
-		rc = nftw(".", nftw_create_stub_fn, 32, flags);
+		nftw_private.u.np_fetch.npf_dest_entry_table = NULL;
+		rc = nftw(".", nftw_fetch_fn, 32, flags);
+		free_dest_table(&nftw_private.u.np_fetch.npf_dest_entry_table);
 		if (rc) {
 			LERROR("failed to fetch directory tree [%s] to target [%s] with key [%s]\n",
-			       source, dest, global_key);
+			       source, dest, key_str);
 			rc2 = rc2 ? rc2 : rc;
-			rc = lond_tree_unlock(".", global_key, true);
+			rc = lond_tree_unlock(".", false, &key, true);
 			if (rc) {
 				LERROR("you might want to run [lond unlock -k %s %s] to cleanup\n",
-				       global_key, source);
+				       key_str, source);
 			}
 		} else {
 			LINFO("fetched directory [%s] to target [%s] with lock key [%s]\n",
-			      source, dest, global_key);
+			      source, dest, key_str);
 		}
 	}
-
-	free_dest_table(&dest_entry_table);
 
 	return rc2;
 }

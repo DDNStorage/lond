@@ -5,19 +5,17 @@ AM_CFLAGS = -Wall -Werror -g $(json_c_CFLAGS) $(json_c_LIBS) \
 	-llustreapi -lpthread
 
 sbin_PROGRAMS = lond_copytool
-bin_PROGRAMS = lond_fetch lond_unlock lond_stat
+bin_PROGRAMS = lond_fetch lond_stat lond_unlock
 noinst_PROGRAMS = generate_definition
 
-lond_copytool_SOURCES = lond_copytool.c lond.h debug.c debug.h \
-	definition.h list.h
-lond_fetch_SOURCES = lond.h lond_common.c lond_fetch.c debug.c debug.h cmd.c \
-	cmd.h definition.h list.h
-lond_stat_SOURCES = lond.h lond_common.c lond_stat.c debug.c debug.h cmd.c \
-	cmd.h definition.h list.h
-lond_unlock_SOURCES = lond.h lond_common.c lond_unlock.c debug.c debug.h cmd.c \
-	cmd.h definition.h list.h
-generate_definition_SOURCES = generate_definition.c debug.c debug.h \
-        definition.h
+GENERAL_SOURCES = cmd.c cmd.h debug.c debug.h definition.h list.h lond.h \
+	lond_common.c
+
+lond_copytool_SOURCES = lond_copytool.c $(GENERAL_SOURCES)
+lond_fetch_SOURCES = lond_fetch.c $(GENERAL_SOURCES)
+lond_stat_SOURCES = lond_stat.c $(GENERAL_SOURCES)
+lond_unlock_SOURCES = lond_unlock.c $(GENERAL_SOURCES)
+generate_definition_SOURCES = generate_definition.c $(GENERAL_SOURCES)
 
 ../pylond/definition.py: generate_definition
 	./generate_definition ../pylond/definition.py
