@@ -18,6 +18,7 @@
 #include <ftw.h>
 #include <string.h>
 #include <linux/limits.h>
+#include <lustre/lustreapi.h>
 #include "definition.h"
 #include "debug.h"
 #include "cmd.h"
@@ -30,9 +31,9 @@ static int check_inode_is_immutable(const char *fpath, bool *immutable)
 {
 	int i;
 	int rc;
-	char cmd[PATH_MAX];
+	char cmd[PATH_MAX + 1];
 	int cmdsz = sizeof(cmd);
-	char output[PATH_MAX];
+	char output[PATH_MAX + 1];
 	int output_sz = sizeof(output);
 
 	snprintf(cmd, cmdsz, "lsattr -d '%s'", fpath);
@@ -122,7 +123,6 @@ static int lond_read_global_xattr(const char *fpath,
 	return 0;
 }
 
-
 /*
  * Print the EPERM reason of an inode,
  * If the inode is locked by myself, return 0. Otherwise, negative value.
@@ -132,9 +132,9 @@ static int lond_lock_eperm_reason(const char *fpath, const char *key_str)
 	int rc;
 	bool immutable = false;
 	struct lond_global_xattr global_xattr;
-	char full_fpath[PATH_MAX];
+	char full_fpath[PATH_MAX + 1];
 
-	rc = get_full_fpath(fpath, full_fpath, PATH_MAX);
+	rc = get_full_fpath(fpath, full_fpath, PATH_MAX + 1);
 	if (rc) {
 		LERROR("failed to get full path of [%s]\n", fpath);
 		return rc;
@@ -186,15 +186,15 @@ int lond_inode_lock(const char *fpath, struct lond_key *key, bool is_root)
 {
 	int rc;
 	int rc2;
-	char cmd[PATH_MAX];
+	char cmd[PATH_MAX + 1];
 	int cmdsz = sizeof(cmd);
 	struct lond_global_xattr set_xattr;
 	struct lond_global_xattr get_xattr;
-	char full_fpath[PATH_MAX];
+	char full_fpath[PATH_MAX + 1];
 	char *key_str = set_xattr.lgx_key_str;
 	struct lond_global_xattr_disk *disk = &set_xattr.lgx_disk;
 
-	rc = get_full_fpath(fpath, full_fpath, PATH_MAX);
+	rc = get_full_fpath(fpath, full_fpath, PATH_MAX + 1);
 	if (rc) {
 		LERROR("failed to get full path of [%s]\n", fpath);
 		return rc;
@@ -211,8 +211,8 @@ int lond_inode_lock(const char *fpath, struct lond_key *key, bool is_root)
 	disk->lgxd_magic = LOND_MAGIC;
 	disk->lgxd_version = LOND_VERSION;
 
-	rc = setxattr(fpath, XATTR_NAME_LOND_GLOBAL, disk, sizeof(*disk),
-		      0);
+	rc = lsetxattr(fpath, XATTR_NAME_LOND_GLOBAL, disk, sizeof(*disk),
+		       0);
 	if (rc) {
 		rc2 = -errno;
 		if (errno == EPERM) {
@@ -272,11 +272,11 @@ int lond_inode_unlock(const char *fpath, bool any_key, struct lond_key *key,
 		      bool ignore_used_by_other)
 {
 	int rc;
-	char cmd[PATH_MAX];
+	char cmd[PATH_MAX + 1];
 	int cmdsz = sizeof(cmd);
 	bool immutable = false;
 	struct lond_global_xattr global_xattr;
-	char full_fpath[PATH_MAX];
+	char full_fpath[PATH_MAX + 1];
 	char key_str[LOND_KEY_STRING_SIZE];
 
 	if (any_key) {
@@ -289,7 +289,7 @@ int lond_inode_unlock(const char *fpath, bool any_key, struct lond_key *key,
 		}
 	}
 
-	rc = get_full_fpath(fpath, full_fpath, PATH_MAX);
+	rc = get_full_fpath(fpath, full_fpath, PATH_MAX + 1);
 	if (rc) {
 		LERROR("failed to get full path of [%s]\n", fpath);
 		return rc;
@@ -360,13 +360,13 @@ static int nftw_unlock_fn(const char *fpath, const struct stat *sb,
 	struct nftw_private_unlock *unlock = &nftw_private.u.np_unlock;
 	bool any_key = unlock->npu_any_key;
 	struct lond_key *key = unlock->npu_key;
-	char full_fpath[PATH_MAX];
+	char full_fpath[PATH_MAX + 1];
 
 	/* Only set regular files and directories to immutable */
 	if (!S_ISREG(sb->st_mode) && !S_ISDIR(sb->st_mode))
 		return 0;
 
-	rc = get_full_fpath(fpath, full_fpath, PATH_MAX);
+	rc = get_full_fpath(fpath, full_fpath, PATH_MAX + 1);
 	if (rc) {
 		LERROR("failed to get full path of [%s]\n", fpath);
 		return rc;
@@ -394,7 +394,7 @@ int get_full_fpath(const char *fpath, char *full_fpath, size_t buf_size)
 {
 	int rc;
 	char *cwd;
-	char cwd_buf[PATH_MAX];
+	char cwd_buf[PATH_MAX + 1];
 	int cwdsz = sizeof(cwd_buf);
 	int fpath_length = strlen(fpath);
 
@@ -434,10 +434,10 @@ int lond_tree_unlock(const char *fpath, bool any_key, struct lond_key *key,
 {
 	int rc;
 	int flags = FTW_PHYS;
-	char full_fpath[PATH_MAX];
+	char full_fpath[PATH_MAX + 1];
 	char key_str[LOND_KEY_STRING_SIZE];
 
-	rc = get_full_fpath(fpath, full_fpath, PATH_MAX);
+	rc = get_full_fpath(fpath, full_fpath, PATH_MAX + 1);
 	if (rc) {
 		LERROR("failed to get full path of [%s]\n", fpath);
 		return rc;
@@ -516,7 +516,7 @@ struct lond_stat_entry {
 	/* Linked into stack */
 	struct lond_list_head			lse_linkage;
 	/* The inode full path */
-	char					lse_path[PATH_MAX];
+	char					lse_path[PATH_MAX + 1];
 	/* Whether this inode is immutable */
 	bool					lse_immutable;
 	/* Global xattr of this entry */
@@ -705,9 +705,9 @@ int lond_inode_stat(const char *fpath, struct lond_list_head *stack_list,
 	int rc;
 	bool immutable = false;
 	struct lond_global_xattr global_xattr;
-	char full_fpath[PATH_MAX];
+	char full_fpath[PATH_MAX + 1];
 
-	rc = get_full_fpath(fpath, full_fpath, PATH_MAX);
+	rc = get_full_fpath(fpath, full_fpath, PATH_MAX + 1);
 	if (rc) {
 		LERROR("failed to get full path of [%s]\n", fpath);
 		return rc;
@@ -788,9 +788,9 @@ int lond_tree_stat(const char *fpath, bool ignore_error)
 {
 	int rc;
 	int flags = FTW_PHYS;
-	char full_fpath[PATH_MAX];
+	char full_fpath[PATH_MAX + 1];
 
-	rc = get_full_fpath(fpath, full_fpath, PATH_MAX);
+	rc = get_full_fpath(fpath, full_fpath, PATH_MAX + 1);
 	if (rc) {
 		LERROR("failed to get full path of [%s]\n", fpath);
 		return rc;
@@ -815,4 +815,65 @@ int lond_tree_stat(const char *fpath, bool ignore_error)
 	if (nftw_private.np_errno)
 		rc = nftw_private.np_errno;
 	return rc;
+}
+
+int lustre_directory2fsname(const char *fpath, char *fsname)
+{
+	int rc;
+	struct stat file_sb;
+
+	rc = lstat(fpath, &file_sb);
+	if (rc) {
+		LERROR("failed to stat [%s] failed: %s\n",
+		       fpath, strerror(errno));
+		return -errno;
+	}
+
+	if (!S_ISDIR(file_sb.st_mode)) {
+		LERROR("[%s] is not a directory\n",
+		       fpath);
+		return -EINVAL;
+	}
+
+	rc = llapi_search_fsname(fpath, fsname);
+	if (rc == -ENODEV) {
+		LERROR("[%s] is not a Lustre directory\n", fpath);
+		return rc;
+	} else if (rc) {
+		LERROR("failed to find the Lustre fsname of directory [%s]: %s\n",
+		       fpath, strerror(-rc));
+		return rc;
+	}
+	return 0;
+}
+
+#define FID_SEQ_ROOT 0x200000007ULL  /* Located on MDT0 */
+#define FID_OID_ROOT 1UL
+
+static inline bool fid_is_root(const struct lu_fid *fid)
+{
+	return fid->f_seq == FID_SEQ_ROOT && fid->f_oid == FID_OID_ROOT;
+}
+
+/**
+ * Check whether file is the root of a Lustre file system
+ * \retval	0  is the root
+ * \retval	1  not the root
+ * \retval	<0 error code
+ */
+int check_lustre_root(const char *fsname, const char *fpath)
+{
+	int rc;
+	struct lu_fid fid;
+
+	rc = llapi_path2fid(fpath, &fid);
+	if (rc) {
+		LERROR("failed to get the fid of [%s]: %s\n",
+		       fpath, strerror(-rc));
+		return rc;
+	}
+
+	if (fid_is_root(&fid))
+		return 0;
+	return 1;
 }

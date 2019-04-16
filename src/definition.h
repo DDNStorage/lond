@@ -67,6 +67,14 @@ enum {
 	{ .name = NULL }						\
 }
 
+#define LOND_SYNC_OPTIONS {						\
+	{ .val = OPT_PROGNAME,	.name = LOND_OPTION_PROGNAME,		\
+	  .has_arg = required_argument },				\
+	{ .val = 'h',	.name = "help",					\
+	  .has_arg = no_argument },					\
+	{ .name = NULL }						\
+}
+
 #define ALL_COMMANDS {							\
 	{ .co_name = "LOND_FETCH_OPTIONS",				\
 	  .co_options = LOND_FETCH_OPTIONS,				\
@@ -79,6 +87,13 @@ enum {
 	  .co_options = LOND_STAT_OPTIONS,				\
 	  .co_arguments = {						\
 	     { .ca_type = ARG_TYPE_FILE_PATH },				\
+	     { .ca_type = ARG_TYPE_NONE }				\
+	  }								\
+	},								\
+	{ .co_name = "LOND_SYNC_OPTIONS",				\
+	  .co_options = LOND_SYNC_OPTIONS,				\
+	  .co_arguments = {						\
+	     { .ca_type = ARG_TYPE_DIR_PATH },				\
 	     { .ca_type = ARG_TYPE_NONE }				\
 	  }								\
 	},								\

@@ -209,6 +209,23 @@ LOND_COMMANDS[LOND_COMMNAD_STAT] = \
                 definition.LOND_STAT_OPTIONS)
 
 
+LOND_COMMNAD_SYNC = "sync"
+
+
+def lond_command_sync(interact, log, args):
+    # pylint: disable=too-many-locals,too-many-branches,too-many-statements
+    # pylint: disable=too-many-return-statements,unused-argument
+    """
+    sync the directory on on-demand Lustre to global Lustre
+    """
+    return lond_command_common(LOND_COMMNAD_SYNC, interact, log, args)
+
+
+LOND_COMMANDS[LOND_COMMNAD_SYNC] = \
+    LondCommand(LOND_COMMNAD_SYNC, lond_command_sync,
+                definition.LOND_SYNC_OPTIONS)
+
+
 def lond_command_help(interact, log, args):
     # pylint: disable=unused-argument
     """

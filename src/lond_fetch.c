@@ -397,6 +397,30 @@ static int create_stub_inode(struct dest_entry **head, const char *src_name,
 	return rc;
 }
 
+static int lond_write_local_xattr(char const *src_name, char const *dst_name)
+{
+	int rc;
+	struct lu_fid fid;
+	char fid_str[FID_NOBRACE_LEN + 1];
+
+	rc = llapi_path2fid(src_name, &fid);
+	if (rc) {
+		LERROR("failed to get fid of [%s]\n", src_name);
+		return rc;
+	}
+
+	fid2str(fid_str, &fid, sizeof(fid_str));
+
+	rc = lsetxattr(dst_name, XATTR_NAME_LOND_HSM_FID, fid_str,
+		       strlen(fid_str), 0);
+	if (rc) {
+		LERROR("failed to set xattr [%s] of inode [%s]: %s\n",
+		       XATTR_NAME_LOND_HSM_FID, dst_name, strerror(errno));
+		return rc;
+	}
+	return rc;
+}
+
 /* The function of nftw() to creat stub file */
 static int nftw_fetch_fn(const char *fpath, const struct stat *sb,
 			 int tflag, struct FTW *ftwbuf)
@@ -464,7 +488,20 @@ static int nftw_fetch_fn(const char *fpath, const struct stat *sb,
 			snprintf(dest_source_dir, dest_source_size, "%s/%s",
 				 dest, base);
 		}
+
 		rc = create_stub_inode(head, fpath, dest_source_dir);
+		if (rc) {
+			LERROR("failed to create stub inode of [%s] in target [%s]\n",
+			       full_fpath, dest_source_dir);
+			return rc;
+		}
+
+		rc = lond_write_local_xattr(fpath, dest_source_dir);
+		if (rc) {
+			LERROR("failed to set local xattr on [%s]\n",
+			       dest_source_dir);
+			return rc;
+		}
 	} else {
 		snprintf(dest_dir, dest_dir_size, "%s/%s", dest_source_dir,
 			 fpath);
@@ -502,6 +539,150 @@ static int relative_path2absolute(char *path, int buf_size)
 }
 
 /*
+ * This function should be called with pwd under $source directory and
+ * holding lock of $source
+ *
+ * Assum $source = $dir/$base
+ * Process of snapshot:
+ * 1. $source=$(cwd) to get $base
+ * 2. chattr -i .
+ * 3. mv ../$dname ../$base.$key.lond
+ * 4. chattr +i .
+ *
+ * There might be some race between 2 and 4, but that should be fine
+ */
+
+static int lond_backup(struct lond_key *key, const char *key_str)
+{
+	int rc;
+	char *cwd;
+	const char *base;
+	char myself[PATH_MAX + 1];
+	char dest[PATH_MAX + 1];
+	char cwd_buf[PATH_MAX + 1];
+	int cwdsz = sizeof(cwd_buf);
+
+	cwd = getcwd(cwd_buf, cwdsz);
+	if (cwd == NULL) {
+		LERROR("failed to get cwd: %s\n", strerror(errno));
+		return -errno;
+	}
+
+	base = basename(cwd);
+	snprintf(dest, sizeof(dest), "../%s.%s.lond", base, key_str);
+	snprintf(myself, sizeof(myself), "../%s", base);
+
+	rc = lond_inode_unlock(".", false, key, false);
+	if (rc) {
+		LERROR("failed to unlock directory [%s] using key [%s]\n",
+		       cwd, key_str);
+		return rc;
+	}
+
+	rc = rename(myself, dest);
+	if (rc) {
+		rc = -errno;
+		LERROR("failed to move directory [%s/%s] to [%s/%s]: %s\n",
+		       cwd, myself, cwd, dest, strerror(errno));
+		return rc;
+	}
+
+	/* lock immediately after rename, to reduce race possibility */
+	rc = lond_inode_lock(".", key, true);
+	if (rc) {
+		cwd = getcwd(cwd_buf, cwdsz);
+		if (cwd == NULL) {
+			LERROR("failed to get cwd: %s\n", strerror(errno));
+			LERROR("failed to lock directory [.] using key [%s]\n",
+			       key_str);
+			return -errno;
+		}
+
+		LERROR("failed to lock directory [%s] using key [%s]\n",
+		       cwd, key_str);
+		return rc;
+	} else {
+		cwd = getcwd(cwd_buf, cwdsz);
+		if (cwd == NULL) {
+			LERROR("failed to get cwd: %s\n", strerror(errno));
+			return -errno;
+		}
+	}
+	LINFO("original dir is saved as [%s]\n", cwd);
+
+	return 0;
+}
+
+static int lond_fetch(const char *source, const char *dest,
+		      const char *dest_fsname, struct lond_key *key,
+		      const char *key_str)
+{
+	int rc;
+	int rc2;
+	int flags = FTW_PHYS;
+	char source_fsname[MAX_OBD_NAME + 1];
+
+	rc = lustre_directory2fsname(source, source_fsname);
+	if (rc) {
+		LERROR("failed to get the fsname of [%s]\n",
+		       source);
+		return rc;
+	}
+
+	if (strcmp(source_fsname, dest_fsname) == 0) {
+		LERROR("fetching from [%s] to [%s] in the same file system [%s] dosn't make any sense\n",
+		       source, dest, source_fsname);
+		return -EINVAL;
+	}
+
+	rc = check_lustre_root(source_fsname, source);
+	if (rc < 0) {
+		LERROR("failed to check whether directory [%s] is the root of file system [%s]\n",
+		       source, source_fsname);
+		return rc;
+	} else if (rc == 0) {
+		LERROR("directory [%s] shound't be fetched to [%s] because it is the root of file system [%s]\n",
+		       source, dest, source_fsname);
+		return rc;
+	}
+
+	LINFO("fetching directory [%s] to target [%s] with lock key [%s]\n",
+	      source, dest, key_str);
+	rc = chdir(source);
+	if (rc) {
+		LERROR("failed to chdir to [%s]: %s\n", source,
+		       strerror(errno));
+		return rc;
+	}
+
+	nftw_private.u.np_fetch.npf_dest_entry_table = NULL;
+	rc = nftw(".", nftw_fetch_fn, 32, flags);
+	free_dest_table(&nftw_private.u.np_fetch.npf_dest_entry_table);
+	if (rc) {
+		LERROR("failed to fetch directory tree [%s] to target [%s] with key [%s]\n",
+		       source, dest, key_str);
+		goto out_unlock;
+	}
+
+	LINFO("fetched directory [%s] to target [%s] with lock key [%s]\n",
+	      source, dest, key_str);
+
+	rc = lond_backup(key, key_str);
+	if (rc) {
+		LERROR("failed to snapshot [%s]\n", source);
+		return rc;
+	}
+	return rc;
+out_unlock:
+	rc2 = lond_tree_unlock(".", false, key, true);
+	if (rc2) {
+		LERROR("failed to unlcok, you might want to run [lond unlock -k %s %s] to cleanup\n",
+		       key_str, source);
+	}
+	return rc;
+}
+
+/*
  * Assumptions:
  * 1) Source directories and dest are all Lustre directories.
  * 2) Source directories could be in different Lustre file system.
@@ -520,7 +701,6 @@ int main(int argc, char *const argv[])
 	int rc;
 	int rc2 = 0;
 	const char *source;
-	int flags = FTW_PHYS;
 	char *dest = nftw_private.u.np_fetch.npf_dest;
 	int dest_size = sizeof(nftw_private.u.np_fetch.npf_dest);
 	struct option long_opts[] = LOND_FETCH_OPTIONS;
@@ -528,6 +708,7 @@ int main(int argc, char *const argv[])
 	char short_opts[] = "h";
 	char key_str[LOND_KEY_STRING_SIZE];
 	struct lond_key key;
+	char dest_fsname[MAX_OBD_NAME + 1];
 	int c;
 
 	progname = argv[0];
@@ -573,36 +754,19 @@ int main(int argc, char *const argv[])
 		return rc;
 	}
 
+	rc = lustre_directory2fsname(dest, dest_fsname);
+	if (rc) {
+		LERROR("failed to get the fsname of [%s]\n",
+		       dest);
+		return rc;
+	}
+
 	nftw_private.u.np_fetch.npf_key = &key;
 	nftw_private.u.np_fetch.npf_archive_id = 1;
 	for (i = optind; i < argc - 1; i++) {
 		source = argv[i];
-		LINFO("fetching directory [%s] to target [%s] with lock key [%s]\n",
-		      source, dest, key_str);
-		rc = chdir(source);
-		if (rc) {
-			LERROR("failed to chdir to [%s]: %s\n", source,
-			       strerror(errno));
-			rc2 = rc2 ? rc2 : rc;
-			continue;
-		}
-
-		nftw_private.u.np_fetch.npf_dest_entry_table = NULL;
-		rc = nftw(".", nftw_fetch_fn, 32, flags);
-		free_dest_table(&nftw_private.u.np_fetch.npf_dest_entry_table);
-		if (rc) {
-			LERROR("failed to fetch directory tree [%s] to target [%s] with key [%s]\n",
-			       source, dest, key_str);
-			rc2 = rc2 ? rc2 : rc;
-			rc = lond_tree_unlock(".", false, &key, true);
-			if (rc) {
-				LERROR("you might want to run [lond unlock -k %s %s] to cleanup\n",
-				       key_str, source);
-			}
-		} else {
-			LINFO("fetched directory [%s] to target [%s] with lock key [%s]\n",
-			      source, dest, key_str);
-		}
+		rc = lond_fetch(source, dest, dest_fsname, &key, key_str);
+		rc2 = rc2 ? rc2 : rc;
 	}
 
 	return rc2;

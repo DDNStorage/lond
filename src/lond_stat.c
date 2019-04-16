@@ -15,6 +15,7 @@
 #include <attr/xattr.h>
 #include <unistd.h>
 #include <string.h>
+#include <lustre/lustreapi.h>
 #include "definition.h"
 #include "debug.h"
 #include "lond.h"
@@ -49,6 +50,7 @@ int main(int argc, char *const argv[])
 	char short_opts[] = "dh";
 	struct stat file_sb;
 	bool recursive = true;
+	char fsname[MAX_OBD_NAME + 1];
 	int c;
 
 	progname = argv[0];
@@ -85,6 +87,16 @@ int main(int argc, char *const argv[])
 			       file, strerror(errno));
 			rc2 = rc2 ? rc2 : rc;
 			continue;
+		}
+
+		rc = llapi_search_fsname(file, fsname);
+		if (rc == -ENODEV) {
+			LERROR("[%s] is not a Lustre directory\n", file);
+			return rc;
+		} else if (rc) {
+			LERROR("failed to find the Lustre fsname of [%s]: %s\n",
+			       file, strerror(-rc));
+			return rc;
 		}
 
 		if (!recursive || S_ISREG(file_sb.st_mode)) {

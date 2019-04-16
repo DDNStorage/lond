@@ -90,8 +90,9 @@ rm -rf $RPM_BUILD_ROOT
 %{python_sitelib}/pylond
 %{_bindir}/lond
 %{_bindir}/lond_fetch
-%{_bindir}/lond_unlock
+%{_bindir}/lond_sync
 %{_bindir}/lond_stat
+%{_bindir}/lond_unlock
 %{_sbindir}/lond_copytool
 %{_sbindir}/lond_copytoold
 %if %{with systemd}

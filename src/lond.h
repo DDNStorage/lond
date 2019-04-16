@@ -60,15 +60,6 @@ struct lond_global_xattr {
 	char lgx_invalid_reason[4096];
 };
 
-struct lond_local_xattr {
-	__u32           llx_magic;
-	__u32		llx_version;
-	/* The lock key */
-	struct lond_key llx_key;
-	/* Whether this global inode is the root of fetched tree */
-	struct lu_fid	llx_global_fid;
-};
-
 struct nftw_private_unlock {
 	/* The key to used to unlock the global Lustre */
 	struct lond_key	*npu_key;
@@ -143,6 +134,8 @@ void lond_key_generate(struct lond_key *key);
 int lond_key_get_string(struct lond_key *key, char *buffer,
 			size_t buffer_size);
 int get_full_fpath(const char *fpath, char *full_fpath, size_t buf_size);
+int lustre_directory2fsname(const char *fpath, char *fsname);
+int check_lustre_root(const char *fsname, const char *fpath);
 
 extern struct nftw_private nftw_private;
 #endif /* _LOND_H_ */
