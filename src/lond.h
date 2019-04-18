@@ -21,7 +21,7 @@
 #include "list.h"
 
 #define XATTR_NAME_LOND_GLOBAL	"trusted.lond_global"
-#define XATTR_NAME_LOND_HSM_FID "trusted.lond_hsm_fid"
+#define XATTR_NAME_LOND_LOCAL	"trusted.lond_local"
 #define LOND_KEY_LENGH 10
 #define LOND_KEY_ANY "any"
 
@@ -38,26 +38,42 @@ struct lond_key {
 #define LOND_MAGIC	0x10ED10ED
 #define LOND_VERSION    1
 
-struct lond_global_xattr_disk {
+struct lond_global_xattr {
 	/* Magic should be euqal to LOND_MAGIC */
-	__u32           lgxd_magic;
+	__u32           lgx_magic;
 	/* version should be equal to LOND_VERSION */
-	__u32           lgxd_version;
+	__u32           lgx_version;
 	/* The lock key */
-	struct lond_key lgxd_key;
+	struct lond_key lgx_key;
 	/* Whether this global inode is the root of fetched tree */
-	__u64		lgxd_is_root:1;
+	__u64		lgx_is_root:1;
 };
 
-struct lond_global_xattr {
+struct lond_local_xattr {
+	/* Magic should be euqal to LOND_MAGIC */
+	__u32           llx_magic;
+	/* version should be equal to LOND_VERSION */
+	__u32           llx_version;
+	/* The lock key */
+	struct lond_key llx_key;
+	/* The global fid */
+	struct lu_fid	llx_global_fid;
+	/* Whether this global inode is the root of fetched tree */
+	__u64		llx_is_root:1;
+};
+
+struct lond_xattr {
 	/* xattr on disk */
-	struct lond_global_xattr_disk lgx_disk;
+	union {
+		struct lond_global_xattr lx_global;
+		struct lond_local_xattr lx_local;
+	} u;
 	/* To print the key */
-	char lgx_key_str[LOND_KEY_STRING_SIZE];
+	char lx_key_str[LOND_KEY_STRING_SIZE];
 	/* Whether the key is valid */
-	bool lgx_is_valid;
+	bool lx_is_valid;
 	/* Why the key is not valid */
-	char lgx_invalid_reason[4096];
+	char lx_invalid_reason[4096];
 };
 
 struct nftw_private_unlock {
@@ -136,6 +152,7 @@ int lond_key_get_string(struct lond_key *key, char *buffer,
 int get_full_fpath(const char *fpath, char *full_fpath, size_t buf_size);
 int lustre_directory2fsname(const char *fpath, char *fsname);
 int check_lustre_root(const char *fsname, const char *fpath);
+int lond_read_local_xattr(const char *fpath, struct lond_xattr *lond_xattr);
 
 extern struct nftw_private nftw_private;
 #endif /* _LOND_H_ */

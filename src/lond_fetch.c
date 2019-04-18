@@ -49,25 +49,46 @@ static inline void fid2str(char *buf, const struct lu_fid *fid, int len)
 	snprintf(buf, len, DFID_NOBRACE, PFID(fid));
 }
 
+static int lond_write_local_xattr(char const *src_name, char const *dst_name,
+				  int dst_fd, struct lond_key *key,
+				  bool is_root)
+{
+	int rc;
+	struct lond_local_xattr disk;
+
+	memcpy(&disk.llx_key, key, sizeof(*key));
+	disk.llx_is_root = is_root;
+	disk.llx_magic = LOND_MAGIC;
+	disk.llx_version = LOND_VERSION;
+
+	rc = llapi_path2fid(src_name, &disk.llx_global_fid);
+	if (rc) {
+		LERROR("failed to get fid of [%s]\n", src_name);
+		return rc;
+	}
+	if (dst_fd < 0)
+		rc = lsetxattr(dst_name, XATTR_NAME_LOND_LOCAL,
+			       &disk, sizeof(disk), 0);
+	else
+		rc = fsetxattr(dst_fd, XATTR_NAME_LOND_LOCAL,
+			       &disk, sizeof(disk), 0);
+	if (rc) {
+		LERROR("failed to set xattr [%s] of inode [%s]: %s\n",
+		       XATTR_NAME_LOND_LOCAL, dst_name, strerror(errno));
+		return rc;
+	}
+	return rc;
+}
+
 static int create_stub_reg(char const *src_name, char const *dst_name,
 			   mode_t dst_mode, mode_t omitted_permissions,
-			   struct stat const *src_sb)
+			   struct stat const *src_sb, struct lond_key *key)
 {
 	int rc;
 	int dest_desc;
 	int open_flags = O_WRONLY | O_CREAT;
 	char cmd[PATH_MAX];
 	int cmdsz = sizeof(cmd);
-	struct lu_fid fid;
-	char fid_str[FID_NOBRACE_LEN + 1];
-
-	rc = llapi_path2fid(src_name, &fid);
-	if (rc) {
-		LERROR("failed to get fid of [%s]\n", src_name);
-		return rc;
-	}
-
-	fid2str(fid_str, &fid, sizeof(fid_str));
 
 	dest_desc = open(dst_name, open_flags | O_EXCL,
 			 dst_mode & ~omitted_permissions);
@@ -77,11 +98,10 @@ static int create_stub_reg(char const *src_name, char const *dst_name,
 		return -1;
 	}
 
-	rc = fsetxattr(dest_desc, XATTR_NAME_LOND_HSM_FID, fid_str,
-		       strlen(fid_str), 0);
+	rc = lond_write_local_xattr(src_name, dst_name, dest_desc, key, false);
 	if (rc) {
-		LERROR("failed to set xattr [%s] of regular file [%s]: %s\n",
-		       XATTR_NAME_LOND_HSM_FID, dst_name, strerror(errno));
+		LERROR("failed to write local xattr of regular file [%s]: %s\n",
+		       dst_name, strerror(errno));
 		goto out_close;
 	}
 
@@ -228,7 +248,7 @@ void free_dest_table(struct dest_entry **head)
 #define CHMOD_MODE_BITS (S_ISUID|S_ISGID|S_ISVTX|S_IRWXU|S_IRWXG|S_IRWXO)
 
 static int create_stub_inode(struct dest_entry **head, const char *src_name,
-			     const char *dst_name)
+			     const char *dst_name, struct lond_key *key)
 {
 	int rc;
 	struct stat src_sb;
@@ -316,7 +336,7 @@ static int create_stub_inode(struct dest_entry **head, const char *src_name,
 		}
 	} else if (S_ISREG(src_mode)) {
 		rc = create_stub_reg(src_name, dst_name, dst_mode,
-				     omitted_permissions, &src_sb);
+				     omitted_permissions, &src_sb, key);
 		if (rc) {
 			LERROR("failed to create regular stub file [%s]\n",
 			       dst_name);
@@ -397,30 +417,6 @@ static int create_stub_inode(struct dest_entry **head, const char *src_name,
 	return rc;
 }
 
-static int lond_write_local_xattr(char const *src_name, char const *dst_name)
-{
-	int rc;
-	struct lu_fid fid;
-	char fid_str[FID_NOBRACE_LEN + 1];
-
-	rc = llapi_path2fid(src_name, &fid);
-	if (rc) {
-		LERROR("failed to get fid of [%s]\n", src_name);
-		return rc;
-	}
-
-	fid2str(fid_str, &fid, sizeof(fid_str));
-
-	rc = lsetxattr(dst_name, XATTR_NAME_LOND_HSM_FID, fid_str,
-		       strlen(fid_str), 0);
-	if (rc) {
-		LERROR("failed to set xattr [%s] of inode [%s]: %s\n",
-		       XATTR_NAME_LOND_HSM_FID, dst_name, strerror(errno));
-		return rc;
-	}
-	return rc;
-}
-
 /* The function of nftw() to creat stub file */
 static int nftw_fetch_fn(const char *fpath, const struct stat *sb,
 			 int tflag, struct FTW *ftwbuf)
@@ -439,6 +435,7 @@ static int nftw_fetch_fn(const char *fpath, const struct stat *sb,
 	char *dest = nftw_private.u.np_fetch.npf_dest;
 	struct dest_entry **head;
 	bool is_root = (strlen(fpath) == 1 && fpath[0] == '.');
+	struct lond_key *key = nftw_private.u.np_fetch.npf_key;
 
 	dest_source_size = sizeof(nftw_private.u.np_fetch.npf_dest_source_dir);
 	head = &nftw_private.u.np_fetch.npf_dest_entry_table;
@@ -460,8 +457,7 @@ static int nftw_fetch_fn(const char *fpath, const struct stat *sb,
 	/* Only set directory and regular file to immutable */
 	if (S_ISREG(sb->st_mode) || S_ISDIR(sb->st_mode)) {
 		/* Lock the inode first before copying to dest */
-		rc = lond_inode_lock(fpath, nftw_private.u.np_fetch.npf_key,
-				     is_root);
+		rc = lond_inode_lock(fpath, key, is_root);
 		if (rc) {
 			LERROR("failed to lock file [%s]\n", full_fpath);
 			return rc;
@@ -489,14 +485,15 @@ static int nftw_fetch_fn(const char *fpath, const struct stat *sb,
 				 dest, base);
 		}
 
-		rc = create_stub_inode(head, fpath, dest_source_dir);
+		rc = create_stub_inode(head, fpath, dest_source_dir, key);
 		if (rc) {
 			LERROR("failed to create stub inode of [%s] in target [%s]\n",
 			       full_fpath, dest_source_dir);
 			return rc;
 		}
 
-		rc = lond_write_local_xattr(fpath, dest_source_dir);
+		rc = lond_write_local_xattr(fpath, dest_source_dir, -1, key,
+					    true);
 		if (rc) {
 			LERROR("failed to set local xattr on [%s]\n",
 			       dest_source_dir);
@@ -505,7 +502,7 @@ static int nftw_fetch_fn(const char *fpath, const struct stat *sb,
 	} else {
 		snprintf(dest_dir, dest_dir_size, "%s/%s", dest_source_dir,
 			 fpath);
-		rc = create_stub_inode(head, fpath, dest_dir);
+		rc = create_stub_inode(head, fpath, dest_dir, key);
 	}
 
 	if (rc) {

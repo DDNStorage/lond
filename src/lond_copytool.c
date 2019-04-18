@@ -355,14 +355,13 @@ static int process_restore(const struct hsm_action_item *hai,
 	int rc;
 	char src[PATH_MAX]; /* HSM file */
 	char dst[PATH_MAX]; /* Lustre file */
-	char fid_str[FID_NOBRACE_LEN + 1];
-	struct lu_fid fid;
 	int open_flags = 0;
 	int mdt_index = -1;
 	int src_fd = -1;
 	int dst_fd = -1;
 	int hp_flags = 0;
 	struct hsm_copyaction_private *hcp = NULL;
+	struct lond_xattr lond_xattr;
 
 	rc = llapi_get_mdt_index_by_fid(opt.o_mnt_fd, &hai->hai_fid,
 					&mdt_index);
@@ -378,24 +377,20 @@ static int process_restore(const struct hsm_action_item *hai,
 	}
 
 	path_lustre(dst, sizeof(dst), opt.o_mnt, &hai->hai_fid);
-	rc = getxattr(dst, XATTR_NAME_LOND_HSM_FID, fid_str, sizeof(fid_str));
-	if (rc < 0) {
-		LERROR("failed to get [%s] xattr of file [%s], %s\n",
-		       XATTR_NAME_LOND_HSM_FID, dst, strerror(errno));
+	rc = lond_read_local_xattr(dst, &lond_xattr);
+	if (rc) {
+		LERROR("failed to read local xattr of [%s]\n", dst);
 		goto fini;
 	}
 
-	rc = sscanf(fid_str, SFID, RFID(&fid));
-	if (rc == 3) {
-		rc = 0;
-	} else {
-		LERROR("[%s] in [%s] xattr of file [%s] is not a valid FID\n",
-		       fid_str);
+	if (!lond_xattr.lx_is_valid) {
+		LERROR("xattr of file [%s] is not valid\n", dst);
 		rc = -ENODATA;
 		goto fini;
 	}
 
-	path_lustre(src, sizeof(src), opt.o_hsm_root, &fid);
+	path_lustre(src, sizeof(src), opt.o_hsm_root,
+		    &lond_xattr.u.lx_local.llx_global_fid);
 
 	src_fd = open(src, O_RDONLY | O_NOATIME | O_NOFOLLOW);
 	if (src_fd < 0) {
