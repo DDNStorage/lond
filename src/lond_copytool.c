@@ -384,7 +384,8 @@ static int process_restore(const struct hsm_action_item *hai,
 	}
 
 	if (!lond_xattr.lx_is_valid) {
-		LERROR("xattr of file [%s] is not valid\n", dst);
+		LERROR("file [%s] doesn't have valid local lond xattr: %s\n",
+		       dst, lond_xattr.lx_invalid_reason);
 		rc = -ENODATA;
 		goto fini;
 	}

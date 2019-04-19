@@ -695,6 +695,7 @@ out_unlock:
 int main(int argc, char *const argv[])
 {
 	int i;
+	int c;
 	int rc;
 	int rc2 = 0;
 	const char *source;
@@ -706,7 +707,9 @@ int main(int argc, char *const argv[])
 	char key_str[LOND_KEY_STRING_SIZE];
 	struct lond_key key;
 	char dest_fsname[MAX_OBD_NAME + 1];
-	int c;
+	char *cwd;
+	char cwd_buf[PATH_MAX + 1];
+	int cwdsz = sizeof(cwd_buf);
 
 	progname = argv[0];
 	while ((c = getopt_long(argc, argv, short_opts,
@@ -758,12 +761,26 @@ int main(int argc, char *const argv[])
 		return rc;
 	}
 
+	cwd = getcwd(cwd_buf, cwdsz);
+	if (cwd == NULL) {
+		LERROR("failed to get cwd: %s\n", strerror(errno));
+		return -errno;
+	}
+
 	nftw_private.u.np_fetch.npf_key = &key;
 	nftw_private.u.np_fetch.npf_archive_id = 1;
 	for (i = optind; i < argc - 1; i++) {
 		source = argv[i];
 		rc = lond_fetch(source, dest, dest_fsname, &key, key_str);
 		rc2 = rc2 ? rc2 : rc;
+
+		rc = chdir(cwd);
+		if (rc) {
+			LERROR("failed to chdir to [%s]: %s\n",
+			       cwd, strerror(errno));
+			rc2 = rc2 ? rc2 : rc;
+			break;
+		}
 	}
 
 	return rc2;

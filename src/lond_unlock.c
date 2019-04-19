@@ -113,6 +113,9 @@ int main(int argc, char *const argv[])
 	struct lond_key key;
 	const char *key_str = NULL;
 	bool any_key = false;
+	char *cwd;
+	char cwd_buf[PATH_MAX + 1];
+	int cwdsz = sizeof(cwd_buf);
 
 	progname = argv[0];
 	while ((c = getopt_long(argc, argv, short_opts,
@@ -159,6 +162,12 @@ int main(int argc, char *const argv[])
 		}
 	}
 
+	cwd = getcwd(cwd_buf, cwdsz);
+	if (cwd == NULL) {
+		LERROR("failed to get cwd: %s\n", strerror(errno));
+		return -errno;
+	}
+
 	for (i = optind; i < argc; i++) {
 		file = argv[i];
 		rc = lstat(file, &file_sb);
@@ -199,8 +208,17 @@ int main(int argc, char *const argv[])
 				rc2 = rc2 ? rc2 : rc;
 				continue;
 			}
+
 			LINFO("unlocked directory tree [%s] with key [%s]\n",
 			      file, key_str);
+
+			rc = chdir(cwd);
+			if (rc) {
+				LERROR("failed to chdir to [%s]: %s\n",
+				       cwd, strerror(errno));
+				rc2 = rc2 ? rc2 : rc;
+				break;
+			}
 		} else {
 			LINFO("[%s] is not locked\n", file);
 		}

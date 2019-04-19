@@ -25,7 +25,7 @@ struct dest_entry *dest_entry_table;
 static void usage(const char *prog)
 {
 	fprintf(stderr,
-		"Usage: %s <source> [dest]\n"
+		"Usage: %s <source>... <dest>\n"
 		"  source: local Lustre directory to sync from\n"
 		"  dest: global Lustre directory to sync to\n",
 		prog);
@@ -34,10 +34,13 @@ static void usage(const char *prog)
 static int lond_sync(const char *source, const char *dest)
 {
 	int rc;
-	char source_fsname[MAX_OBD_NAME + 1];
-	char dest_fsname[MAX_OBD_NAME + 1];
 	char cmd[PATH_MAX];
 	int cmdsz = sizeof(cmd);
+	struct lond_xattr lond_xattr;
+	char source_fsname[MAX_OBD_NAME + 1];
+	char dest_fsname[MAX_OBD_NAME + 1];
+
+	LINFO("syncing from [%s] to [%s]\n", source, dest);
 
 	rc = lustre_directory2fsname(source, source_fsname);
 	if (rc) {
@@ -57,9 +60,18 @@ static int lond_sync(const char *source, const char *dest)
 		return rc;
 	}
 
-	if (dest == NULL) {
-		LERROR("support not finished yet\n");
-		rc = -EINVAL;
+	rc = lond_read_local_xattr(source, &lond_xattr);
+	if (rc) {
+		LERROR("failed to read local xattr of [%s]\n", source);
+		return rc;
+	}
+
+	if (!lond_xattr.lx_is_valid) {
+		LERROR("directory [%s] doesn't have valid local lond xattr: %s\n",
+		       source, lond_xattr.lx_invalid_reason);
+		LERROR("[%s] might not be fetched through lond\n",
+		       source, lond_xattr.lx_invalid_reason);
+		rc = -ENODATA;
 		return rc;
 	}
 
@@ -83,6 +95,7 @@ static int lond_sync(const char *source, const char *dest)
 		       source, dest, rc);
 		return rc;
 	}
+	LINFO("synced from [%s] to [%s]\n", source, dest);
 	return 0;
 }
 
@@ -95,13 +108,15 @@ static int lond_sync(const char *source, const char *dest)
  */
 int main(int argc, char *const argv[])
 {
-	int rc;
-	const char *source;
-	const char *dest = NULL;
-	struct option long_opts[] = LOND_STAT_OPTIONS;
-	char *progname;
-	char short_opts[] = "h";
 	int c;
+	int i;
+	int rc;
+	int rc2 = 0;
+	const char *dest;
+	const char *source;
+	const char *progname;
+	char short_opts[] = "h";
+	struct option long_opts[] = LOND_SYNC_OPTIONS;
 
 	progname = argv[0];
 	while ((c = getopt_long(argc, argv, short_opts,
@@ -120,28 +135,22 @@ int main(int argc, char *const argv[])
 		}
 	}
 
-	if (argc <= optind) {
-		LERROR("please specify the local Lustre directory to sync from\n");
+	if (argc <= optind + 1) {
+		LERROR("please specify the local and global Lustre directories to sync between\n");
 		usage(progname);
 		return -EINVAL;
-	} else if (argc == optind + 1) {
-		source = argv[optind];
-		dest = NULL;
-	} else {
-		source = argv[optind];
-		dest = argv[optind + 1];
 	}
 
-	rc = lond_sync(source, dest);
-	if (rc) {
-		if (dest != NULL)
-			LERROR("failed to sync from [%s] to [%s]\n",
-			       source, dest);
-		else
-			LERROR("failed to sync from [%s] to its source directory on global Lustre\n",
-			       source, dest);
-		return rc;
+	dest = argv[argc - 1];
+	for (i = optind; i < argc - 1; i++) {
+		source = argv[i];
+		rc = lond_sync(source, dest);
+		if (rc) {
+			LERROR("failed to sync from [%s] to [%s]\n", source,
+			       dest);
+			rc2 = rc2 ? rc2 : rc;
+		}
 	}
 
-	return rc;
+	return rc2;
 }
