@@ -38,9 +38,10 @@
 static void usage(const char *prog)
 {
 	fprintf(stderr,
-		"Usage: %s <source>... <dest>\n"
+		"Usage: %s [option]... <source>... <dest>\n"
 		"  source: global Lustre directory tree to fetch from\n"
-		"  dest: local Lustre directory to fetch to\n",
+		"  dest: local Lustre directory to fetch to\n"
+		"  -r|--rename: rename the source directory after finished fetching\n",
 		prog);
 }
 
@@ -82,13 +83,14 @@ static int lond_write_local_xattr(char const *src_name, char const *dst_name,
 
 static int create_stub_reg(char const *src_name, char const *dst_name,
 			   mode_t dst_mode, mode_t omitted_permissions,
-			   struct stat const *src_sb, struct lond_key *key)
+			   struct stat const *src_sb, void *private)
 {
 	int rc;
 	int dest_desc;
 	int open_flags = O_WRONLY | O_CREAT;
 	char cmd[PATH_MAX];
 	int cmdsz = sizeof(cmd);
+	struct lond_key *key = (struct lond_key *)private;
 
 	dest_desc = open(dst_name, open_flags | O_EXCL,
 			 dst_mode & ~omitted_permissions);
@@ -137,287 +139,7 @@ out_close:
 	return rc;
 }
 
-static int create_stub_symlink(char const *src_name, char const *dst_name,
-			       size_t size)
-{
-	int rc;
-	char *src_link_val;
-
-	src_link_val = calloc(1, size);
-	if (src_link_val == NULL) {
-		LERROR("failed to allocate memory\n");
-		return -ENOMEM;
-	}
-
-	rc = readlink(src_name, src_link_val, size);
-	if (rc < 0) {
-		LERROR("failed to readlink [%s]: %s\n", src_name,
-		       strerror(errno));
-		rc = -errno;
-		goto out;
-	}
-
-	rc = symlink(src_link_val, dst_name);
-	if (rc) {
-		LERROR("failed to symlink [%s] to [%s]: %s\n",
-		       src_link_val, src_name, strerror(errno));
-		rc = -errno;
-		goto out;
-	}
-
-out:
-	free(src_link_val);
-	return rc;
-}
-
-static int set_owner(char const *dst_name, struct stat const *src_sb)
-{
-	int rc;
-	uid_t uid = src_sb->st_uid;
-	gid_t gid = src_sb->st_gid;
-
-	rc = lchown(dst_name, uid, gid);
-	if (rc) {
-		LERROR("failed to chown file [%s]: %s\n", dst_name,
-		       strerror(errno));
-		return -errno;
-	}
-	return 0;
-}
-
-static void generate_hash_key(struct dest_entry *ent)
-{
-	snprintf(ent->de_key, sizeof(ent->de_key), "%"PRIuMAX"/%"PRIuMAX,
-		 ent->de_dev, ent->de_ino);
-}
-
-/*
- * Add file path, copied from inode number INO and device number DEV,
- * If entry alreay exists in hash table, set $ent_in_table to it.
- */
-int remember_copied(struct dest_entry **head, const char *fpath, ino_t ino,
-		    dev_t dev, struct dest_entry **entry_in_table)
-{
-	int rc = 0;
-	struct dest_entry *entry;
-
-	entry = calloc(sizeof(*entry), 1);
-	if (!entry) {
-		rc = -ENOMEM;
-		return rc;
-	}
-
-	entry->de_ino = ino;
-	entry->de_dev = dev;
-	generate_hash_key(entry);
-
-	HASH_FIND_STR(*head, entry->de_key, *entry_in_table);
-	if (*entry_in_table != NULL) {
-		LDEBUG("found [%s] alrady exists as [%s]\n", fpath,
-		       (*entry_in_table)->de_fpath);
-		goto out_free_entry;
-	}
-
-	entry->de_fpath = strdup(fpath);
-	if (entry->de_fpath == NULL) {
-		rc = -ENOMEM;
-		goto out_free_entry;
-	}
-	HASH_ADD_STR(*head, de_key, entry);
-	LDEBUG("remembered [%s]\n", entry->de_fpath);
-
-	return 0;
-out_free_entry:
-	free(entry);
-	return rc;
-}
-
-void free_dest_table(struct dest_entry **head)
-{
-	struct dest_entry *entry, *tmp;
-
-	HASH_ITER(hh, *head, entry, tmp) {
-		  HASH_DEL(*head, entry);
-		  free(entry->de_fpath);
-		  free(entry);
-	}
-	*head = NULL;
-}
-
-/* 07777 */
-#define CHMOD_MODE_BITS (S_ISUID|S_ISGID|S_ISVTX|S_IRWXU|S_IRWXG|S_IRWXO)
-
-static int create_stub_inode(struct dest_entry **head, const char *src_name,
-			     const char *dst_name, struct lond_key *key)
-{
-	int rc;
-	struct stat src_sb;
-	struct stat dst_sb;
-	mode_t src_mode;
-	mode_t dst_mode = 0;
-	mode_t dst_mode_bits;
-	mode_t omitted_permissions;
-	bool restore_dst_mode = false;
-	struct dest_entry *earlier_entry = NULL;
-
-	LDEBUG("creating [%s]\n", dst_name);
-
-	/*
-	 * Do not rust the stat of nftw, do it myself after setting the file
-	 * to immutable
-	 */
-	rc = lstat(src_name, &src_sb);
-	if (rc) {
-		LERROR("failed to stat [%s]: %s\n", src_name, strerror(errno));
-		return rc;
-	}
-
-	src_mode = src_sb.st_mode;
-	if (!S_ISDIR(src_mode) && src_sb.st_nlink > 1) {
-		rc = remember_copied(head, dst_name,
-				     src_sb.st_ino, src_sb.st_dev,
-				     &earlier_entry);
-		if (rc) {
-			LERROR("failed to remember copied\n");
-			return rc;
-		}
-
-		if (earlier_entry != NULL) {
-			/* Already created the inode, create hard link to it */
-			rc = link(earlier_entry->de_fpath, dst_name);
-			if (rc) {
-				LERROR("failed to create hard link from [%s] to [%s]: %s\n",
-				       earlier_entry->de_fpath, dst_name,
-				       strerror(errno));
-			}
-			return 0;
-		}
-	}
-
-	/*
-	 * Omit some permissions at first, so unauthorized users cannot nip
-	 * in before the file/dir is ready.
-	 */
-	dst_mode_bits = src_mode & CHMOD_MODE_BITS;
-	omitted_permissions = dst_mode_bits & (S_IRWXG | S_IRWXO);
-
-	if (S_ISDIR(src_mode)) {
-		/* dst_name should not exist */
-		rc = mkdir(dst_name, dst_mode_bits & ~omitted_permissions);
-		if (rc) {
-			LERROR("cannot create directory [%s]: %s\n", dst_name,
-			       strerror(errno));
-			return rc;
-		}
-
-		/*
-		 * We need search and write permissions to the new directory
-		 * for writing the directory's contents. Check if these
-		 * permissions are there.
-		 */
-		rc = lstat(dst_name, &dst_sb);
-		if (rc) {
-			LERROR("failed to stat [%s]: %s\n", dst_name,
-			       strerror(errno));
-			return rc;
-		}
-
-		if ((dst_sb.st_mode & S_IRWXU) != S_IRWXU) {
-			/* Make the new directory searchable and writable.  */
-			dst_mode = dst_sb.st_mode;
-			restore_dst_mode = true;
-
-			rc = chmod(dst_name, dst_mode | S_IRWXU);
-			if (rc) {
-				LERROR("failed to chmod [%s]: %s\n", dst_name,
-				       strerror(errno));
-				return rc;
-			}
-		}
-	} else if (S_ISREG(src_mode)) {
-		rc = create_stub_reg(src_name, dst_name, dst_mode,
-				     omitted_permissions, &src_sb, key);
-		if (rc) {
-			LERROR("failed to create regular stub file [%s]\n",
-			       dst_name);
-			return rc;
-		}
-	} else if (S_ISLNK(src_mode)) {
-		/* Symbol link doesn't need to */
-		rc = create_stub_symlink(src_name, dst_name,
-					 src_sb.st_size + 1);
-		if (rc) {
-			LERROR("failed to create symbol link [%s]\n",
-			       dst_name);
-			return rc;
-		}
-	} else if (S_ISBLK(src_mode) || S_ISCHR(src_mode) ||
-		   S_ISSOCK(src_mode)) {
-		rc = mknod(dst_name, src_mode & ~omitted_permissions,
-			   src_sb.st_rdev);
-		if (rc) {
-			LERROR("failed to create special file [%s]\n",
-			       dst_name);
-			return rc;
-		}
-	} else if (S_ISFIFO(src_mode)) {
-		rc = mknod(dst_name, src_mode & ~omitted_permissions, 0);
-		if (rc) {
-			LERROR("failed to create fifo [%s]\n",
-			       dst_name);
-			return rc;
-		}
-	} else {
-		LERROR("[%s] has unkown file type\n", src_name);
-		return -1;
-	}
-
-	rc = set_owner(dst_name, &src_sb);
-	if (rc) {
-		LERROR("failed to set owner [%s]\n", dst_name);
-		return rc;
-	}
-
-	/* TODO: timestamps, acl, copy_xattr */
-
-	/* Cannot set permissions of symbol link */
-	if (S_ISLNK(src_mode))
-		return 0;
-
-	if (omitted_permissions && !restore_dst_mode) {
-		/*
-		 * Permissions were deliberately omitted when the file
-		 * was created due to security concerns.  See whether
-		 * they need to be re-added now.  It'd be faster to omit
-		 * the lstat, but deducing the current destination mode
-		 * is tricky in the presence of implementation-defined
-		 * rules for special mode bits.
-		 */
-		rc = lstat(dst_name, &dst_sb);
-		if (rc) {
-			LERROR("failed to stat [%s]: %s\n", dst_name,
-			       strerror(errno));
-			return rc;
-		}
-
-		dst_mode = dst_sb.st_mode;
-		if (omitted_permissions & ~dst_mode)
-			restore_dst_mode = true;
-	}
-
-	if (restore_dst_mode) {
-		rc = chmod(dst_name, dst_mode | omitted_permissions);
-		if (rc) {
-			LERROR("failed to chmod [%s]: %s\n", dst_name,
-			       strerror(errno));
-			return rc;
-		}
-	}
-
-	return rc;
-}
-
-/* The function of nftw() to creat stub file */
+/* The function of nftw() to fetch files */
 static int nftw_fetch_fn(const char *fpath, const struct stat *sb,
 			 int tflag, struct FTW *ftwbuf)
 {
@@ -485,7 +207,8 @@ static int nftw_fetch_fn(const char *fpath, const struct stat *sb,
 				 dest, base);
 		}
 
-		rc = create_stub_inode(head, fpath, dest_source_dir, key);
+		rc = lond_copy_inode(head, fpath, dest_source_dir,
+				     create_stub_reg, key);
 		if (rc) {
 			LERROR("failed to create stub inode of [%s] in target [%s]\n",
 			       full_fpath, dest_source_dir);
@@ -502,15 +225,16 @@ static int nftw_fetch_fn(const char *fpath, const struct stat *sb,
 	} else {
 		snprintf(dest_dir, dest_dir_size, "%s/%s", dest_source_dir,
 			 fpath);
-		rc = create_stub_inode(head, fpath, dest_dir, key);
+		rc = lond_copy_inode(head, fpath, dest_dir, create_stub_reg,
+				     key);
+		if (rc) {
+			LERROR("failed to create stub inode of [%s] in target [%s]\n",
+			       full_fpath, dest_source_dir);
+			return rc;
+		}
 	}
 
-	if (rc) {
-		LERROR("failed to create stub inode of [%s] in target [%s]\n",
-		       full_fpath, dest_source_dir);
-		return rc;
-	}
-	return 0;
+	return rc;
 }
 
 static int relative_path2absolute(char *path, int buf_size)
@@ -549,7 +273,7 @@ static int relative_path2absolute(char *path, int buf_size)
  * There might be some race between 2 and 4, but that should be fine
  */
 
-static int lond_backup(struct lond_key *key, const char *key_str)
+static int lond_rename(struct lond_key *key, const char *key_str)
 {
 	int rc;
 	char *cwd;
@@ -612,7 +336,7 @@ static int lond_backup(struct lond_key *key, const char *key_str)
 
 static int lond_fetch(const char *source, const char *dest,
 		      const char *dest_fsname, struct lond_key *key,
-		      const char *key_str)
+		      const char *key_str, bool need_rename)
 {
 	int rc;
 	int rc2;
@@ -663,13 +387,15 @@ static int lond_fetch(const char *source, const char *dest,
 
 	LINFO("fetched directory [%s] to target [%s] with lock key [%s]\n",
 	      source, dest, key_str);
+	if (!need_rename)
+		return 0;
 
-	rc = lond_backup(key, key_str);
+	rc = lond_rename(key, key_str);
 	if (rc) {
-		LERROR("failed to snapshot [%s]\n", source);
+		LERROR("failed to rename [%s]\n", source);
 		return rc;
 	}
-	return rc;
+	return 0;
 out_unlock:
 	rc2 = lond_tree_unlock(".", false, key, true);
 	if (rc2) {
@@ -703,13 +429,14 @@ int main(int argc, char *const argv[])
 	int dest_size = sizeof(nftw_private.u.np_fetch.npf_dest);
 	struct option long_opts[] = LOND_FETCH_OPTIONS;
 	char *progname;
-	char short_opts[] = "h";
+	char short_opts[] = "hr";
 	char key_str[LOND_KEY_STRING_SIZE];
 	struct lond_key key;
 	char dest_fsname[MAX_OBD_NAME + 1];
 	char *cwd;
 	char cwd_buf[PATH_MAX + 1];
 	int cwdsz = sizeof(cwd_buf);
+	bool need_rename = false;
 
 	progname = argv[0];
 	while ((c = getopt_long(argc, argv, short_opts,
@@ -721,6 +448,9 @@ int main(int argc, char *const argv[])
 		case 'h':
 			usage(progname);
 			exit(1);
+		case 'r':
+			need_rename = true;
+			break;
 		default:
 			LERROR("failed to parse option [%c]\n", c);
 			usage(progname);
@@ -739,13 +469,7 @@ int main(int argc, char *const argv[])
 	}
 
 	strncpy(dest, argv[argc - 1], dest_size);
-	/* Remove the '/'s in the tail */
-	for (i = strlen(dest) - 1; i > 0; i--) {
-		if (dest[i] == '/')
-			dest[i] = '\0';
-		else
-			break;
-	}
+	remove_slash_tail(dest);
 	if (strlen(dest) <= 0)
 		usage(progname);
 	rc = relative_path2absolute(dest, dest_size);
@@ -771,7 +495,8 @@ int main(int argc, char *const argv[])
 	nftw_private.u.np_fetch.npf_archive_id = 1;
 	for (i = optind; i < argc - 1; i++) {
 		source = argv[i];
-		rc = lond_fetch(source, dest, dest_fsname, &key, key_str);
+		rc = lond_fetch(source, dest, dest_fsname, &key, key_str,
+				need_rename);
 		rc2 = rc2 ? rc2 : rc;
 
 		rc = chdir(cwd);

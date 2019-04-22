@@ -42,6 +42,8 @@ enum {
 	  .has_arg = required_argument },				\
 	{ .val = 'h',	.name = "help",					\
 	  .has_arg = no_argument },					\
+	{ .val = 'r',	.name = "rename",				\
+	  .has_arg = no_argument },					\
 	{ .name = NULL }						\
 }
 
@@ -70,6 +72,8 @@ enum {
 #define LOND_SYNC_OPTIONS {						\
 	{ .val = OPT_PROGNAME,	.name = LOND_OPTION_PROGNAME,		\
 	  .has_arg = required_argument },				\
+	{ .val = 'c',	.name = "copy",					\
+	  .has_arg = no_argument },					\
 	{ .val = 'h',	.name = "help",					\
 	  .has_arg = no_argument },					\
 	{ .name = NULL }						\

@@ -75,26 +75,19 @@ static void handler(int signal)
 	exiting = true;
 }
 
-static int path_lustre(char *buf, int sz, const char *mnt,
-			  const struct lu_fid *fid)
-{
-	return snprintf(buf, sz, "%s/%s/fid/"DFID_NOBRACE, mnt,
-			dot_lustre_name, PFID(fid));
-}
-
 static int action_fini(struct hsm_copyaction_private **phcp,
 		       const struct hsm_action_item *hai, int hp_flags,
 		       int ct_rc)
 {
 	struct hsm_copyaction_private	*hcp;
-	char				 lstr[PATH_MAX];
+	char				 lstr[PATH_MAX + 1];
 	int				 rc;
 
 	LDEBUG("Action completed, notifying coordinator cookie=%#jx, FID="DFID", hp_flags=%d err=%d\n",
 	       (uintmax_t)hai->hai_cookie, PFID(&hai->hai_fid),
 	       hp_flags, -ct_rc);
 
-	path_lustre(lstr, sizeof(lstr), opt.o_mnt, &hai->hai_fid);
+	lustre_fid_path(lstr, sizeof(lstr), opt.o_mnt, &hai->hai_fid);
 
 	if (phcp == NULL || *phcp == NULL) {
 		rc = llapi_hsm_action_begin(&hcp, ctdata, hai, -1, 0, true);
@@ -136,7 +129,7 @@ static int begin_restore(struct hsm_copyaction_private **phcp,
 	rc = llapi_hsm_action_begin(phcp, ctdata, hai, mdt_index, open_flags,
 				    false);
 	if (rc < 0) {
-		path_lustre(src, sizeof(src), opt.o_mnt, &hai->hai_fid);
+		lustre_fid_path(src, sizeof(src), opt.o_mnt, &hai->hai_fid);
 		LERROR("llapi_hsm_action_begin() on '%s' failed\n", src);
 	}
 
@@ -376,7 +369,7 @@ static int process_restore(const struct hsm_action_item *hai,
 		goto fini;
 	}
 
-	path_lustre(dst, sizeof(dst), opt.o_mnt, &hai->hai_fid);
+	lustre_fid_path(dst, sizeof(dst), opt.o_mnt, &hai->hai_fid);
 	rc = lond_read_local_xattr(dst, &lond_xattr);
 	if (rc) {
 		LERROR("failed to read local xattr of [%s]\n", dst);
@@ -390,8 +383,8 @@ static int process_restore(const struct hsm_action_item *hai,
 		goto fini;
 	}
 
-	path_lustre(src, sizeof(src), opt.o_hsm_root,
-		    &lond_xattr.u.lx_local.llx_global_fid);
+	lustre_fid_path(src, sizeof(src), opt.o_hsm_root,
+			&lond_xattr.u.lx_local.llx_global_fid);
 
 	src_fd = open(src, O_RDONLY | O_NOATIME | O_NOFOLLOW);
 	if (src_fd < 0) {

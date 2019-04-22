@@ -125,6 +125,25 @@ struct nftw_private_fetch {
 	struct dest_entry *npf_dest_entry_table;
 };
 
+struct nftw_private_sync {
+	/* The dest directory to copy to */
+	char	 nps_dest[PATH_MAX + 1];
+	/*
+	 * The source directory under the dest directory. This is genrated
+	 * after copying started with source directory locked. So there is no
+	 * need to init it before calling nftw.
+	 */
+	char	 nps_dest_source_dir[PATH_MAX + 1];
+	/* Hash table to check whether the inode is already created before */
+	struct	 dest_entry *nps_dest_entry_table;
+	/* Mount point of dest */
+	char	 nps_dest_mnt[PATH_MAX + 1];
+	/* Mount point of source */
+	char	 nps_source_mnt[PATH_MAX + 1];
+	char	*nps_copy_buf;
+	int	 nps_copy_buf_size;
+};
+
 struct nftw_private {
 	/* Whether to ignore error during the iteration */
 	bool	np_ignore_error;
@@ -135,8 +154,17 @@ struct nftw_private {
 		struct nftw_private_unlock	np_unlock;
 		/* Used by fetch */
 		struct nftw_private_fetch	np_fetch;
+		/* Used by sync */
+		struct nftw_private_sync	np_sync;
 	} u;
 };
+
+typedef int (*lond_copy_reg_file_fn)(char const *src_name,
+				     char const *dst_name,
+				     mode_t dst_mode,
+				     mode_t omitted_permissions,
+				     struct stat const *src_sb,
+				     void *private);
 
 int lond_inode_lock(const char *fpath, struct lond_key *key, bool is_root);
 int lond_inode_unlock(const char *fpath, bool any_key, struct lond_key *key,
@@ -147,12 +175,22 @@ int lond_tree_unlock(const char *fpath, bool any_key, struct lond_key *key,
 		     bool ignore_error);
 int lond_tree_stat(const char *fpath, bool ignore_error);
 void lond_key_generate(struct lond_key *key);
+bool lond_key_equal(struct lond_key *key1, struct lond_key *key2);
 int lond_key_get_string(struct lond_key *key, char *buffer,
 			size_t buffer_size);
 int get_full_fpath(const char *fpath, char *full_fpath, size_t buf_size);
 int lustre_directory2fsname(const char *fpath, char *fsname);
 int check_lustre_root(const char *fsname, const char *fpath);
+int lond_read_global_xattr(const char *fpath, struct lond_xattr *lond_xattr);
 int lond_read_local_xattr(const char *fpath, struct lond_xattr *lond_xattr);
+int lond_copy_inode(struct dest_entry **head, const char *src_name,
+		    const char *dst_name, lond_copy_reg_file_fn reg_fn,
+		    void *private);
+void free_dest_table(struct dest_entry **head);
+void remove_slash_tail(char *path);
+int check_inode_is_immutable(const char *fpath, bool *immutable);
+int lustre_fid_path(char *buf, int sz, const char *mnt,
+		    const struct lu_fid *fid);
 
 extern struct nftw_private nftw_private;
 #endif /* _LOND_H_ */
