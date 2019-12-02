@@ -1,0 +1,34 @@
+Prolog script:
+# cat /home/guzheng/slurm/setup_lod.sh
+
+#!/usr/bin/bash
+echo "=lod setup="
+/usr/bin/lod start
+/usr/bin/cp /mnt/lustre/testfile /mnt/lustre_lod/
+
+Epilog script:
+# cat /home/guzheng/slurm/teardown_lod.sh
+
+#!/usr/bin/bash
+echo "=lod teardown="
+/usr/bin/scp /mnt/lustre_lod/testfile /mnt/lustre/testfile
+/usr/bin/lod stop
+
+Target file of job:
+# cat /mnt/lustre/testfile
+Thu Dec 6 13:19:27 CST 2018
+
+Job script:
+# cat /home/guzheng/slurm/modify_bb.sh
+#!/bin/bash
+echo `date` >> /mnt/lustre_lod/testfile
+
+Commit job with LOD:
+# srun -w guz-el7-vm3 --prolog=/home/guzheng/slurm/setup_lod.sh --epilog=/home/guzheng/slurm/teardown_lod.sh /home/guzheng/slurm/modify_bb.sh
+=lod setup=
+=lod teardown=
+
+After job done:
+# cat /mnt/lustre/testfile
+Thu Dec 6 13:19:27 CST 2018
+Thu Dec 6 13:21:01 CST 2018

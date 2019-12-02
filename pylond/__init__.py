@@ -7,4 +7,5 @@ __all__ = ["common",
            "definition_helper",
            "definition",
            "lond_copytoold",
-           "lond"]
+           "lond",
+           "lod"]

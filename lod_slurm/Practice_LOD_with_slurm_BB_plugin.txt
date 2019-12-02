@@ -1,0 +1,36 @@
+There two parts here:
+Native LOD (lustre on demand)
+Slurm burst buffer plugin (named LOD)
+a. Apply lod support patch (burstbuff-add-lod.patch), and build
+b. Checkout DDN lod-dev branch of slurm (https://github.com/DDNStorage/slurm/tree/lod-dev) and build
+
+1. slurm configuration
+Enable lod bb plugin:
+BurstBufferType=burst_buffer/lod
+
+Tips: Let slurm run as root, otherwise it'll fail to setup LOD
+
+2.start slurmctld on manager server, and slurmd on each salve node
+
+3.As bb operations are only supported on slurmctld (https://slurm.schedmd.com/burst_buffer.html), so here we install LOD on the manager server (which slurmctld running on), and this manager node should be in client list of LOD's configuration, otherwise the stage_in/stage_out will fail.
+
+4.Demo
+Slurm sbatch script:
+#cat /home/guzheng/slurm/lod_example_01.sh
+
+#!/bin/bash
+#LOD setup
+#LOD stage_in source=/mnt/lustre/testfile destination=/mnt/lustre_lod/burstfile
+#LOD stage_out source=/mnt/lustre_lod/burstfile destination=/mnt/lustre/testfile
+#SBATCH --nodelist=guz-el7-vm3
+srun /home/guzheng/slurm/modify_bb.sh
+
+Job script:
+cat /home/guzheng/slurm/modify_bb.sh
+
+#!/bin/bash
+echo `hostname` >> /mnt/lustre_lod/burstfile
+
+Commit job to LOD with sbatch
+# sbatch -w guz-el7-vm3 /home/guzheng/slurm/lod_example_01.sh
+Submitted batch job 6

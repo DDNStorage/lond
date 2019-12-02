@@ -7,6 +7,7 @@ AUTOMAKE_OPTIONS = -Wall foreign
 ACLOCAL_AMFLAGS = ${ALOCAL_FLAGS}
 
 PYTHON_COMMANDS = \
+	lod \
 	lond \
 	lond_copytoold
 
@@ -14,11 +15,15 @@ dist_bin_SCRIPTS = lond
 dist_sbin_SCRIPTS = lond_copytoold
 
 EXTRA_DIST = \
+    $(PYTHON_COMMANDS) \
 	c_check.pl \
 	detect-distro.sh \
+	lod.conf \
+	README \
 	lond.spec \
 	lond.spec.in \
 	systemd/* \
+	lod_slurm/* \
 	.pylintrc
 
 CHECKS = $(PYTHON_COMMANDS:%=%.python_checked)
