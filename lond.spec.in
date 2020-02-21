@@ -78,7 +78,6 @@ mkdir -p $RPM_BUILD_ROOT%{_sysconfdir}
 mkdir -p $RPM_BUILD_ROOT%{_datadir}/lod_slurm
 mkdir -p $RPM_BUILD_ROOT%{python_sitelib}/pylond
 cp -a lod $RPM_BUILD_ROOT%{_sbindir}
-cp -a lod.conf $RPM_BUILD_ROOT%{_sysconfdir}
 cp -a lond $RPM_BUILD_ROOT%{_bindir}
 cp -a src/lond_fetch $RPM_BUILD_ROOT%{_bindir}
 cp -a src/lond_sync $RPM_BUILD_ROOT%{_bindir}
@@ -100,7 +99,6 @@ rm -rf $RPM_BUILD_ROOT
 %files
 %defattr(-,root,root)
 %{_sbindir}/lod
-%{_sysconfdir}/lod.conf
 %{_datadir}/lod_slurm
 %{python_sitelib}/pylond
 %{_bindir}/lond

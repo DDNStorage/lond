@@ -18,7 +18,6 @@ EXTRA_DIST = \
     $(PYTHON_COMMANDS) \
 	c_check.pl \
 	detect-distro.sh \
-	lod.conf \
 	README \
 	lond.spec \
 	lond.spec.in \

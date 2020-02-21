@@ -1,52 +1,30 @@
 # How to play with LoD
 
-## Run LoD with lod.conf
-
-```
-LOD (lustre on demand) Configuration, *yaml format*
-
-# nodes: which nodes will run LOD on
-nodes: vm1,vm2,vm3,vm4
-# device: the device used to build LOD, for both MDTs and OSTs
-# device: /dev/vdc
-# mdt_device: device that used for mdt, insead of *device* section
-mdt_device: /dev/vdb
-# ost_device: device that used for ost, insead of *device* section
-ost_device: /dev/vdc
-# mds: Metadata server(Tips, mdt0 is integrated with mgs)
-mds: vm1,vm2,vm3
-# oss: Object storage servers, if not set, will use all the nodes except mds
-oss: vm1,vm2,vm3
-# clients: LOD clients, means will attch LOD instance on it, if not set, will use all the nodes.
-clients: vm1,vm2,vm3,vm4
-# net: net type, if not set, use tcp as default, [tcp, o2ib]
-net: tcp0
-# fsname: LOD filesystem name, if not set, will use default name (ltest)
-#fsname: ltest
-# mount_point: mountpoint for LOD, if not set, will use default [/mnt/lustre_lod]
-#mountpoint: /mnt/lod_test
-```
-lod.conf definition as above, if don't  specify target conf with --config option, lod will take /etc/lod.conf.
-
 ## Run LoD with command line config
 
-
 ```
--d/--dry-run :*dry* run, don't do real job")
--n/--node :, run lod with specified node list")
--m/--mdtdevs :mdt device")
--o/--ostdevs :ost device")
--f/--fsname :lustre instance fsname")
--i/--inet :networks interface, e.g. tcp0, o2ib01")
--p/--mountpoint :mountpoint on client")
--h/--help :show usage")
-```
-Also, you can run LoD with command line options, it's dynamic and don't need to configure lod.conf.
+Usage: lod [-h/--help]
+[-d/--dry-run] -n/--node c01,c[02-04] --mds c01 --oss c[02-04] --mdtdevs /dev/sda --ostdevs /dev/sdb --mountpoint /mnt/lod  start/stop/initialize
+	-d/--dry-run :*dry* run, don't do real job
+	-n/--node :, run lod with specified node list, also means the clients
+	-T/--mds :MDS
+	-O/--oss :OSS
+	-I/--index :instance index
+	-m/--mdtdevs :mdt device
+	-o/--ostdevs :ost device
+	-f/--fsname :lustre instance fsname
+	-i/--inet :networks interface, e.g. tcp0, o2ib01
+	-p/--mountpoint :mountpoint on client
+	-h/--help :show usage
 
+for stage_in/stage_out
+lod --source=/foo/foo1 --destination /foo2/ stage_in
+lod --sourcelist=/foo/foo1_list --source=/foo_dir --destination /foo2/ stage_out
+```
 For example:
 
 ```
-# lod --node=vm2,vm3 --mdtdevs=/dev/vdc --ostdevs=/dev/vdb --inet=tcp1 --mountpoint=/mnt/lustre start
+# lod --node=vm2,vm3 --mdtdevs=/dev/vdc --ostdevs=/dev/vdb --fsname=fslod --inet=tcp1 --mountpoint=/mnt/lustre start
 ```
 It'll setup LoD instance with following config:
 
@@ -63,42 +41,6 @@ Clients:
 Fsname: fslod
 Net: tcp1
 Mountpoint: /mnt/lustre
-```
-
-## Run LoD with lod.conf and command options, Hybrid mode
-
-Means you can setup LoD with lod.conf, but use command line options to overwrite some section, dynamic and flexible.
-
-For example, in a computer cluster, many configs are not changed frequently, e.g. device used by LoD, lnet interface, mountpoint, we can store these stable sections into lod.conf. And the computer nodes user want to setup LoD on are dynamic, especially like job schduler system, it depends on the target job, so that we only need to provide a nodelist (--node=xx,xx) to create a realtime on-demand LoD instance.
-
-
-```
-# lod --node=vm2,vm3 start
-```
-
-```
-/etc/lod.conf
-# LOD (lustre on demand) Configuration, *yaml format*
-mdt_device: /dev/vdb
-ost_device: /dev/vdc
-net: tcp1
-fsname: ltest
-mountpoint: /mnt/lod_test
-```
-
-```
-MDS: ['vm2', 'vm3']
-	  mdt0,mgs: /dev/vdb	---> vm2
-	      mdt1: /dev/vdb	---> vm3
-OSS: ['vm2', 'vm3']
-	      ost0: /dev/vdc	---> vm2
-	      ost1: /dev/vdc	---> vm3
-Clients:
-	vm2	/mnt/lod_test
-	vm3	/mnt/lod_test
-Fsname: ltest
-Net: tcp1
-Mountpoint: /mnt/lod_test
 ```
 
 ## SLURM integration

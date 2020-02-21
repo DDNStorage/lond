@@ -2,10 +2,12 @@
 # Copyright (c) 2018-2019 DataDirect Networks, Inc.
 # All Rights Reserved.
 # Author: Gu Zheng <gzheng@ddn.com>
+# pylint: disable=too-many-lines
 """
 Lustre On Demand
 """
-
+import random
+import string
 import traceback
 import logging
 import copy
@@ -14,13 +16,12 @@ import os
 import re
 import getopt
 from multiprocessing import Pool as LodWorkPool
-import yaml
 from pylcommon import utils
 from pylcommon import ssh_host
 
 VALID_OPTS = ("initialize", "start", "stop", "status", "stage_in", "stage_out")
+VALID_STAGE_OPTS = ("stage_in", "stage_out")
 VALID_NET_TYPE_PATTERN = ("tcp*", "o2ib*")
-LOD_CONFIG = "/etc/lod.conf"
 LOD_LOG_DIR = "/var/log/lod/"
 
 LOD_NODES = "nodes"
@@ -37,9 +38,6 @@ LOD_DEFAULT_FSNAME = "fslod"
 LOD_DEFAULT_NET = "tcp"
 LOD_DEFAULT_MOUNTPOINT = "/mnt/lustre_lod"
 
-SOURCE = None
-SOURCE_LIST = None
-DEST = None
 OPERATOR = None
 MPIRUN = None
 
@@ -53,17 +51,33 @@ def usage():
     """
     Print usage string
     """
-    utils.eprint("""Usage: lod <-c/--config config_file> <-h/--help>
-<-d/--dry-run> <-n/--node c01,c[02-04]> [start/stop/initialize]""")
-    utils.eprint("	--config config_file :use specified config instead of default '/etc/lod.conf'")
+    utils.eprint("""Usage: lod [-h/--help]
+ [-d/--dry-run] -n/--node c01,c[02-04] [--mds c01] [--oss c[02-04]]
+ --mdtdevs /dev/sda --ostdevs /dev/sdb --fsname mylod --mountpoint /mnt/lod
+  start/stop/initialize""")
     utils.eprint("	-d/--dry-run :*dry* run, don't do real job")
-    utils.eprint("	-n/--node :, run lod with specified node list")
+    utils.eprint("	-n/--node :, run lod with specified node list, also means the clients")
+    utils.eprint("	-T/--mds :MDS")
+    utils.eprint("	-O/--oss :OSS")
+    utils.eprint("	-I/--index :instance index")
     utils.eprint("	-m/--mdtdevs :mdt device")
     utils.eprint("	-o/--ostdevs :ost device")
     utils.eprint("	-f/--fsname :lustre instance fsname")
     utils.eprint("	-i/--inet :networks interface, e.g. tcp0, o2ib01")
     utils.eprint("	-p/--mountpoint :mountpoint on client")
-    utils.eprint("	-h/--help :show usage")
+    utils.eprint("	-h/--help :show usage\n")
+    utils.eprint("""for stage_in/stage_out""")
+    utils.eprint("lod --source=/foo/foo1 --destination /foo2/ stage_in")
+    utils.eprint("lod --sourcelist=/foo/foo1_list --source=/foo_dir --destination /foo2/ stage_out")
+
+
+def lod_generate_random_str(randomlength=16):
+    """
+    Generate random string
+    """
+    str_list = [random.choice(string.digits + string.ascii_letters) for _ in range(randomlength)]
+    random_str = ''.join(str_list)
+    return random_str
 
 
 def lod_wrapper_action(node, action):
@@ -111,7 +125,8 @@ class LodConfig(object):
     # pylint: disable=too-many-instance-attributes,too-few-public-methods
     def __init__(self, node_list, device, mdt_device, ost_device, mds_list=None,
                  oss_list=None, client_list=None, net=LOD_DEFAULT_NET,
-                 fsname=LOD_DEFAULT_FSNAME, mountpoint=LOD_DEFAULT_MOUNTPOINT):
+                 fsname=LOD_DEFAULT_FSNAME, mountpoint=LOD_DEFAULT_MOUNTPOINT,
+                 index=None):
         # pylint: disable=too-many-arguments
         self.lc_node_list = node_list
         self.lc_fsname = fsname
@@ -129,6 +144,7 @@ class LodConfig(object):
         self.lc_oss_list = oss_list
         self.lc_client_list = client_list
         self.lc_mountpoint = mountpoint
+        self.lc_index = index
 
     def adjust_and_validate(self):
         """
@@ -163,7 +179,7 @@ class LodConfig(object):
 
         # if mds_list is None, choose the first node for node list as mds
         if self.lc_mds_list is None or len(self.lc_mds_list) == 0:
-            self.lc_mds_list = copy.deepcopy(self.lc_node_list)
+            self.lc_mds_list = [self.lc_node_list[0]]
 
         # if oss_list is None, will use all the nodes
         if self.lc_oss_list is None or len(self.lc_oss_list) == 0:
@@ -189,6 +205,8 @@ class LodConfig(object):
                           self.lc_client_list, self.lc_node_list)
             return False
 
+        # change MDT OST format to [node]:[dev1],[dev2] ?
+        # e.g. --mdt vm1:/dev/sda --ost vm1:/dev/sdb,/dev/sdc --ost vm2:/dev/sdc
         # TIPS:mds_list and oss_list should can be mixed
         # mds: vm1, vm2
         # oss: vm1, vm2
@@ -206,7 +224,6 @@ class Lod(object):
         self.lod_mds_nodes = list()
         self.lod_oss_nodes = list()
         self.lod_client_nodes = list()
-        self.lod_dcp_nodes = list()
         mdt_device = lod_config.lc_mdt_device
         ost_device = lod_config.lc_ost_device
         net = lod_config.lc_net
@@ -242,69 +259,7 @@ class Lod(object):
             logging.error("No client node found, request at least 1, %s.",
                           self.lod_client_nodes)
             return None
-
-    def stage_in(self):
-        """
-        Stage in operation
-        """
-        return self.do_cp()
-
-    def stage_out(self):
-        """
-        Stage out operation
-        """
-        return self.do_cp()
-
-    def do_cp(self):
-        """
-        Copy @SOURCE file or files in SOURCE_LIST to @DEST
-        if SOURCE is set, means single file, use cp instead if dcp not installed
-        elif SOURCE_LIST is set, dcp is required.
-        """
-        if DEST is None or SOURCE is None:
-            logging.error("pelease specify source and destination")
-            return -1
-
-        # take first client node to run copy job
-        cp_node = self.lod_client_nodes[0]
-        cp_command = ""
-        no_dcp = False
-
-        # if dcp node list is None, detect all client and store them into lisr
-        if len(self.lod_dcp_nodes) == 0:
-            for node in self.lod_client_nodes:
-                if node.has_command("dcp") and node.has_command("mpirun"):
-                    self.lod_dcp_nodes.append(node)
-
-        if len(self.lod_dcp_nodes) == 0:
-            if SOURCE_LIST is not None:
-                logging.error("No valid dcp and mpi-runtime found on nodes %s, exit",
-                              [node.ln_hostname for node in self.lod_client_nodes])
-                return -1
-            no_dcp = True
-
-        source_items = " ".join(SOURCE.strip().split(","))
-
-        if no_dcp:
-            cp_command = "rsync --delete --timeout=1800 -az %s %s" % (source_items, DEST)
-        else:
-            hostname_list = ",".join([node.ln_hostname for node in self.lod_dcp_nodes])
-            mpirun_prefix = "mpirun -np 4 " if MPIRUN is None else MPIRUN
-            if SOURCE_LIST is None:
-                cp_command = ("%s --host %s dcp --sparse --preserve %s %s" %
-                              (mpirun_prefix, hostname_list, source_items, DEST))
-            else:
-                cp_command = ("%s --host %s dcp --sparse --preserve --input %s %s %s" %
-                              (mpirun_prefix, hostname_list, SOURCE_LIST, source_items, DEST))
-
-        logging.debug("run command [%s]", cp_command)
-
-        ret = cp_node.run(cp_command)
-        if ret:
-            logging.error("failed to command [%s] on node [%s]", cp_command,
-                          cp_node.ln_hostname)
-            logging.error(traceback.format_exc())
-        return ret
+        self.lod_index = lod_config.lc_index
 
     def do_action(self, action):
         """
@@ -327,7 +282,8 @@ class Lod(object):
         Show lod topology
         Operator: start
         MDS: mds0 mds1 ... mdsX
-            mdt0,mgs: /dev/vda	---> mds0
+                mgs: /dev/vdx	---> mds0
+                mdt0: /dev/vda	---> mds0
                 mdt1: /dev/vdb	---> mds1
         OSS: oss0 oss1 ...ossX
                 ost0: /dev/vdx	---> oss0
@@ -338,23 +294,15 @@ class Lod(object):
             client02	/mnt/lod
         FSNAME: fsname
         NET: tcp
-        MOUNTPOINT: /mnt/lustre
+        MOUNTPOINT: /mnt/lod
         """
         utils.eprint("Operator: %s" % OPERATOR)
-        if OPERATOR in ("stage_in", "stage_out"):
-            if SOURCE is not None:
-                utils.eprint("Source: %s" % SOURCE)
-            elif SOURCE_LIST is not None:
-                utils.eprint("Sourcelist: %s" % SOURCE_LIST)
-            utils.eprint("Destination: %s" % DEST)
-            return
-
         utils.eprint("MDS: %s" % [mds_node.ln_hostname for mds_node in self.lod_mds_nodes])
         for mds_node in self.lod_mds_nodes:
             if mds_node.lm_index == 0:
-                mdt_name = "mdt0,mgs"
-            else:
-                mdt_name = "mdt%d" % mds_node.lm_index
+                utils.eprint("	%10s: %s	---> %s" %
+                             ("mgs", mds_node.lm_mgt, mds_node.ln_hostname))
+            mdt_name = "mdt%d" % mds_node.lm_index
             utils.eprint("	%10s: %s	---> %s" %
                          (mdt_name, mds_node.lm_mdt, mds_node.ln_hostname))
 
@@ -441,12 +389,99 @@ class Lod(object):
                               oss.lo_ost, oss.ln_hostname)
                 return -1
 
-        for mds in self.lod_mds_nodes:
+        for mds in list(reversed(self.lod_mds_nodes)):
             if mds.umount():
                 logging.error("failed to umount lod mdt device[%s] on [%s].",
                               mds.lm_mdt, mds.ln_hostname)
                 return -1
         return 0
+
+
+class LodStage(object):
+    """
+    Lod Stage instance
+    """
+    def __init__(self, nodes, source, sourcelist, dest):
+        self.ls_stage_nodes = nodes
+        self.ls_stage_source = source
+        self.ls_stage_sourcelist = sourcelist
+        self.ls_stage_dest = dest
+
+    def show(self):
+        """
+        Show details only if dryrun
+        """
+        if self.ls_stage_source is not None:
+            utils.eprint("Source: %s" % self.ls_stage_source)
+        elif self.ls_stage_sourcelist is not None:
+            utils.eprint("Sourcelist: %s" % self.ls_stage_sourcelist)
+        utils.eprint("Destination: %s" % self.ls_stage_dest)
+
+    def stage_in(self):
+        """
+        Stage in operation
+        """
+        return self._do_cp()
+
+    def stage_out(self):
+        """
+        Stage out operation
+        """
+        return self._do_cp()
+
+    def _do_cp(self):
+        """
+        Copy @source file or files in sourcelist to @dest
+        if source is set, means single file, use cp instead if dcp not installed
+        elif sourcelist is set, dcp is required.
+        """
+        if self.ls_stage_dest is None or self.ls_stage_source is None:
+            logging.error("pelease specify source and destination")
+            return -1
+
+        # take first client node to run copy job
+        cp_node = self.ls_stage_nodes[0]
+
+        no_dcp = False
+
+        lod_dcp_nodes = list()
+        # detect all client and store them into lisr
+        for node in self.ls_stage_nodes:
+            if node.has_command("dcp") and node.has_command("mpirun"):
+                lod_dcp_nodes.append(node)
+
+        if len(lod_dcp_nodes) == 0:
+            if self.ls_stage_sourcelist is not None:
+                logging.error("No valid dcp and mpi-runtime found on nodes %s, exit",
+                              [node.ln_hostname for node in self.ls_stage_nodes])
+                return -1
+            no_dcp = True
+
+        source_items = " ".join(self.ls_stage_source.strip().split(","))
+
+        if no_dcp:
+            cp_command = ("rsync --delete --timeout=1800 -az %s %s" %
+                          (source_items, self.ls_stage_dest))
+        else:
+            hostname_list = ",".join([node.ln_hostname for node in lod_dcp_nodes])
+            mpirun_prefix = "mpirun -np 4 " if MPIRUN is None else MPIRUN
+            if self.ls_stage_sourcelist is None:
+                cp_command = ("%s --host %s dcp --sparse --preserve %s %s" %
+                              (mpirun_prefix, hostname_list, source_items,
+                               self.ls_stage_dest))
+            else:
+                cp_command = ("%s --host %s dcp --sparse --preserve --input %s %s %s" %
+                              (mpirun_prefix, hostname_list, self.ls_stage_sourcelist,
+                               source_items, self.ls_stage_dest))
+
+        logging.debug("run command [%s]", cp_command)
+
+        ret = cp_node.run(cp_command)
+        if ret:
+            logging.error("failed to command [%s] on node [%s]",
+                          cp_command, cp_node.ln_hostname)
+            logging.error(traceback.format_exc())
+        return ret
 
 
 class LodNode(object):
@@ -557,13 +592,19 @@ class LodMds(LodNode):
     """
     Lod Mds
     """
-    def __init__(self, hostname, mdt, mgs, index, fsname,
-                 mountpoint="/mnt/lod_mdt", net="tcp", args=None):
+    def __init__(self, hostname, mdt, mgs, index, fsname, net="tcp", args=None):
         # pylint: disable=too-many-arguments
+        random_hidden_path = "_".join((".mdt", fsname, str(index)))
+        mountpoint = os.path.join("/mnt/", random_hidden_path)
         super(LodMds, self).__init__(hostname, mgs, fsname,
                                      mountpoint, net, args)
         self.lm_mdt = mdt
         self.lm_index = index
+        self.lm_mgt = ""
+        self.lm_mgt_mountpoint = ""
+        if index == 0:
+            self.lm_mgt = "/tmp/.lod_mgt_200M"
+            self.lm_mgt_mountpoint = os.path.join("/mnt/", ".mgs_lod")
 
     def mkfs(self):
         """
@@ -574,18 +615,51 @@ class LodMds(LodNode):
             logging.error("device [%s] is not a device", self.lm_mdt)
             return -1
 
-        if self.lm_index == 0:
-            command = ("mkfs.lustre --fsname=%s --mdt --mgs --index=0 --reformat %s" %
-                       (self.ln_fsname, self.lm_mdt))
-        else:
-            command = ("mkfs.lustre --fsname=%s --mdt --mgsnode=%s@%s --index=%d --reformat %s" %
-                       (self.ln_fsname, self.ln_mgs, self.ln_net, self.lm_index, self.lm_mdt))
+        command = ("mkfs.lustre --fsname=%s --mdt --mgsnode=%s@%s --index=%d --reformat %s" %
+                   (self.ln_fsname, self.ln_mgs, self.ln_net, self.lm_index, self.lm_mdt))
         return self.run(command)
 
     def mount(self):
         """
         Mount
         """
+        # check MGS service, if no MGS service, make MGS combine with MDT0000
+        if self.lm_index == 0:
+            command = "lctl get_param mgs.MGS.uuid"
+            ret = self.run(command, silent=True)
+            if ret < 0:
+                logging.info("starting MGS service on [%s]", self.ln_hostname)
+                # setup mgt
+                command = ("mkfs.lustre --mgs --reformat --device-size=200000 %s" %
+                           self.lm_mgt)
+                ret = self.run(command, silent=True)
+                if ret < 0:
+                    logging.error("failed to format mgt [%s]", self.lm_mgt)
+                    return -1
+
+                ret = self.run("test -e %s" % self.lm_mgt_mountpoint, silent=True)
+                if ret != 0:
+                    ret = self.run("mkdir -p %s" % self.lm_mgt_mountpoint)
+                    if ret != 0:
+                        logging.error("failed to create directory [%s]",
+                                      self.lm_mgt_mountpoint)
+                        return -1
+
+                command = ("mount -t lustre -o loop %s %s" %
+                           (self.lm_mgt, self.lm_mgt_mountpoint))
+                ret = self.run(command, silent=True)
+                # failed to mount?
+                if ret < 0:
+                    command = "lctl get_param mgs.MGS.uuid"
+                    ret = self.run(command, silent=True)
+                    # mgs already mount (maybe by other jobs)
+                    if ret == 0:
+                        pass
+                    else:
+                        logging.error("failed to mount mgt [/tmp/.lod_mgt_200M] to %s",
+                                      self.lm_mgt_mountpoint)
+                        return -1
+
         ret = self.run("test -e %s" % self.ln_mountpoint, silent=True)
         if ret != 0:
             ret = self.run("mkdir -p %s" % self.ln_mountpoint)
@@ -601,14 +675,51 @@ class LodMds(LodNode):
         command = "mount -t lustre %s %s" % (self.lm_mdt, self.ln_mountpoint)
         return self.run(command)
 
+    def umount(self):
+        # umount mdt first, and if no others are using this MGT, umount it too
+        ret = super(LodMds, self).umount()
+        if ret < 0:
+            return ret
+
+        if self.lm_index > 0:
+            return 0
+
+        command = "lctl list_param mdt.*"
+        ret = self.run(command, silent=True)
+        if ret == 0:
+            return 0
+
+        logging.info("no MDT active on [%s], try to stop MGS service now.",
+                     self.ln_hostname)
+
+        command = "lctl get_param mgs.MGS.uuid"
+        # if mgt already umount, skip it
+        ret = self.run(command, silent=True)
+        if ret < 0:
+            return 0
+
+        ret = self.run("umount -d %s" % self.lm_mgt_mountpoint)
+        if ret != 0:
+            logging.debug("failed to do normal umount [%s] on host [%s], "
+                          "try with -f again",
+                          self.lm_mgt_mountpoint, self.ln_hostname)
+            ret = self.run("umount -d -f %s" % self.lm_mgt_mountpoint)
+            if ret != 0:
+                logging.error("failed to force umount [%s] on host [%s]",
+                              self.lm_mgt_mountpoint, self.ln_hostname)
+                return -1
+        return 0
+
 
 class LodOss(LodNode):
     """
     Lod Mds
     """
     def __init__(self, hostname, ost, mgs, index, fsname,
-                 mountpoint="/mnt/lod_ost", net="tcp", args=None):
+                 net="tcp", args=None):
         # pylint: disable=too-many-arguments
+        random_hidden_path = "_".join((".ost", fsname, str(index)))
+        mountpoint = os.path.join("/mnt/", random_hidden_path)
         super(LodOss, self).__init__(hostname, mgs, fsname,
                                      mountpoint, net, args)
         self.lo_ost = ost
@@ -663,75 +774,50 @@ class LodClient(LodNode):
         return self.run(command)
 
 
-def lod_parse_config(config, slurm_nodes=None, fsname=None, mdtdevs=None, ostdevs=None,
-                     inet=None, mountpoint=None):
+def lod_build_config(slurm_nodes, mds_list, oss_list, fsname, mdtdevs, ostdevs,
+                     inet, mountpoint, index):
     """
-    Parse lod configuration
+    Build lod configuration for LOD instance
     """
     # pylint: disable=too-many-arguments,too-many-locals,too-many-branches
     # take slurm nodes directly if found
-    node_list = None
-    client_list = None
-    mds_list = None
-    oss_list = None
+    node_list = slurm_nodes
+    client_list = slurm_nodes
+
     if slurm_nodes:
         logging.debug("Slurm node: %s.", slurm_nodes)
-        node_list = slurm_nodes
-    else:
-        nodes = config.get(LOD_NODES)
-        if nodes is None:
-            logging.error("No *nodes* found in %s.", LOD_CONFIG)
-            return None
-        node_list = nodes.strip().split(',')
-
-        mds = config.get(LOD_MDS)
-        if mds is not None:
-            mds_list = mds.strip().split(',')
-
-        oss = config.get(LOD_OSS)
-        if oss is not None:
-            oss_list = oss.strip().split(',')
-
-        clients = config.get(LOD_CLIENTS)
-        if clients is not None:
-            client_list = clients.strip().split(',')
 
     if inet is not None:
         net = inet
-    elif config is not None:
-        net = config.get(LOD_NET)
     else:
         net = LOD_DEFAULT_NET
 
     device = None
-    if mdtdevs is not None:
+    if mdtdevs is not None and len(mdtdevs) > 0:
         mdt_device = mdtdevs
     else:
-        device = config.get(LOD_DEVICE)
-        mdt_device = config.get(LOD_MDT_DEVICE)
+        logging.error("no mdtdevs found")
+        return None
 
-    if ostdevs is not None:
+    if ostdevs is not None and len(ostdevs) > 0:
         ost_device = ostdevs
     else:
-        ost_device = config.get(LOD_OST_DEVICE)
+        logging.error("no ostdevs found")
+        return None
 
     if fsname is not None:
         fs_name = fsname
-    elif config is not None:
-        fs_name = config.get(LOD_FSNAME)
     else:
         fs_name = LOD_DEFAULT_FSNAME
 
     if mountpoint:
         mount_point = mountpoint
-    elif config is not None:
-        mount_point = config.get(LOD_MOUNTPOINT)
     else:
         mount_point = LOD_DEFAULT_MOUNTPOINT
 
     return LodConfig(node_list, device, mdt_device, ost_device,
                      mds_list, oss_list, client_list,
-                     net, fs_name, mount_point)
+                     net, fs_name, mount_point, index)
 
 
 def devide_zero_prefix_index(number):
@@ -807,16 +893,16 @@ def main():
     # pylint: disable=global-statement,too-many-branches,too-many-statements
     reload(sys)
     sys.setdefaultencoding("utf-8")
-    config_fpath = LOD_CONFIG
 
     reload(sys)
     sys.setdefaultencoding("utf-8")
 
     options, args = getopt.getopt(sys.argv[1:],
-                                  "dc:f:m:n:o:i:p:s:S:D:M:h",
+                                  "dT:O:f:m:n:o:i:p:s:S:D:M:hI:",
                                   ["dry-run",
-                                   "config=",
                                    "fsname=",
+                                   "mds=",
+                                   "oss=",
                                    "mdtdevs=",
                                    "node=",
                                    "ostdevs=",
@@ -826,6 +912,7 @@ def main():
                                    "sourcelist=",
                                    "destination=",
                                    "mpirun=",
+                                   "index=",
                                    "help"])
 
     dry_run = False
@@ -833,51 +920,57 @@ def main():
     mdtdevs = None
     ostdevs = None
     node_list = None
+    mds_list = None
+    oss_list = None
     inet = None
     mountpoint = None
+    index = lod_generate_random_str(24)
+    source = None
+    sourcelist = None
+    dest = None
 
-    global SOURCE
-    global SOURCE_LIST
-    global DEST
     global OPERATOR
     global MPIRUN
 
     for opt, arg in options:
-        if opt == '-d' or opt == "--dry-run" or opt == "-dry-run":
+        if opt in ('-d', '--dry-run'):
             dry_run = True
-        elif opt == '-c' or opt == "--config" or opt == "-config":
-            config_fpath = arg
-        elif opt == '-f' or opt == "--fsname" or opt == "-fsname":
+        elif opt in ('-f', '--fsname'):
             fsname = arg
-        elif opt == '-m' or opt == "--mdtdevs" or opt == "-mdtdevs":
+        elif opt in ('-m', '--mdtdevs'):
             mdtdevs = arg
-        elif opt == '-n' or opt == "--node" or opt == "-node":
+        elif opt in ('-T', '--mds'):
+            mds_list = arg
+        elif opt in ('-O', '--oss'):
+            oss_list = arg
+        elif opt in ('-n', '--node'):
             node_list = arg
-        elif opt == '-o' or opt == "--ostdevs" or opt == "-ostdevs":
+        elif opt in ('-o', '--ostdevs'):
             ostdevs = arg
-        elif opt == '-i' or opt == "--inet" or opt == "-inet":
+        elif opt in ('-i', '--inet'):
             inet = arg
-        elif opt == '-p' or opt == "--mountpoint" or opt == "-mountpoint":
+        elif opt in ('-p', '--mountpoint'):
             mountpoint = arg
-        elif opt == '-s' or opt == "--source" or opt == "-source":
-            SOURCE = arg
-        elif opt == '-S' or opt == "--sourcelist" or opt == "-sourcelist":
-            SOURCE_LIST = arg
-        elif opt == '-D' or opt == "--destination" or opt == "-destination":
-            DEST = arg
-        elif opt == '-M' or opt == "--mpirun" or opt == "-mpirun":
+        elif opt in ('-s', '--source'):
+            source = arg
+        elif opt in ('-S', '--sourcelist'):
+            sourcelist = arg
+        elif opt in ('-D', '--destination'):
+            dest = arg
+        elif opt in ('-M', '--mpirun'):
             MPIRUN = arg
-        elif opt == '-h' or opt == "--help" or opt == "-help":
+        elif opt in ('-h', '--help'):
+            usage()
+            sys.exit(1)
+        else:
+            logging.error("Invalid option [%s]",
+                          opt)
             usage()
             sys.exit(1)
 
-    if len(args) != 1:
-        usage()
-        sys.exit(1)
-
     OPERATOR = args[0]
 
-    if OPERATOR not in VALID_OPTS:
+    if str(OPERATOR).lower() not in VALID_OPTS:
         logging.error("Invalid operator [%s]", OPERATOR)
         usage()
         sys.exit(-1)
@@ -900,42 +993,79 @@ def main():
     elif node_list is not None and len(node_list) > 0:
         slurm_node_array = parse_slurm_node_string(node_list)
 
-    config = None
-    if slurm_node_array is None or len(slurm_node_array) == 0 or mdtdevs is None or ostdevs is None:
-        try:
-            with open(config_fpath) as config_fd:
-                config = yaml.load(config_fd)
-        except:
-            logging.error("not able to load [%s] as yaml file,"
-                          "please correct it.\n%s", config_fpath,
-                          traceback.format_exc())
+    if slurm_node_array is None or len(slurm_node_array) == 0:
+        logging.error("no nodes specified")
+        sys.exit(-1)
+
+    # do stage operator
+    if OPERATOR.lower() in VALID_STAGE_OPTS:
+        if source is None and sourcelist is None:
+            logging.error("no source or sourcelist specified")
+            sys.exit(-1)
+        if dest is None:
+            logging.error("no *dest* specified")
             sys.exit(-1)
 
-    lod_conf = lod_parse_config(config, slurm_node_array,
+        lod_nodes = list()
+        for node in slurm_node_array:
+            lod_node = LodNode(node, None, None, None, None, None)
+            lod_nodes.append(lod_node)
+
+        lod_stage = LodStage(lod_nodes, source, sourcelist, dest)
+
+        if dry_run:
+            lod_stage.show()
+            return 0
+
+        if OPERATOR.lower() == "stage_in":
+            return lod_stage.stage_in()
+        elif OPERATOR.lower() == "stage_out":
+            return lod_stage.stage_out()
+        else:
+            logging.error("invalid operator [%s]", OPERATOR)
+            usage()
+            sys.exit(-1)
+
+    if mdtdevs is None:
+        logging.error("no MDT device specified")
+        sys.exit(-1)
+    if ostdevs is None:
+        logging.error("no OST device specified")
+        sys.exit(-1)
+    if fsname is None:
+        logging.error("no fsname specified")
+        sys.exit(-1)
+    if mountpoint is None:
+        logging.error("no mountpoint specified")
+        sys.exit(-1)
+
+    lod_conf = lod_build_config(slurm_node_array, mds_list, oss_list,
                                 fsname, mdtdevs, ostdevs,
-                                inet, mountpoint)
+                                inet, mountpoint, index)
     if lod_conf is None:
         sys.exit(-1)
 
     ret = lod_conf.adjust_and_validate()
     if not ret:
-        logging.error("invalid configuration [%s], please correct it.", config_fpath)
+        logging.error("invalid lod options, please correct it.\n%s",
+                      sys.argv[1:])
         sys.exit(-1)
 
     lod = Lod(lod_conf)
     if lod is None:
-        logging.error("failed to create LOD with configuration [%s], please correct it.",
-                      config_fpath)
+        logging.error("failed to create LOD, please correct options.\n%s",
+                      sys.argv[1:])
         sys.exit(-1)
 
     if dry_run:
         lod.show_topology()
         sys.exit(0)
 
-    ret = lod.do_action(OPERATOR)
+    ret = lod.do_action(OPERATOR.lower())
     if ret < 0:
         logging.error("failed to [%s] LOD.", OPERATOR)
         sys.exit(-1)
+    return 0
 
 
 if __name__ == "__main__":
