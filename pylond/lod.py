@@ -37,6 +37,9 @@ LOD_CLIENTS = "clients"
 LOD_DEFAULT_FSNAME = "fslod"
 LOD_DEFAULT_NET = "tcp"
 LOD_DEFAULT_MOUNTPOINT = "/mnt/lustre_lod"
+LOD_REGION_SPLIT = "@"
+LOD_NODE_SPLIT = ":"
+LOD_DEV_SPLIT = ","
 
 OPERATOR = None
 MPIRUN = None
@@ -123,8 +126,8 @@ class LodConfig(object):
     Lod config instance
     """
     # pylint: disable=too-many-instance-attributes,too-few-public-methods
-    def __init__(self, node_list, device, mdt_device, ost_device, mds_list=None,
-                 oss_list=None, client_list=None, net=LOD_DEFAULT_NET,
+    def __init__(self, node_list, device, mdt_mapping, ost_mapping,
+                 client_list=None, net=LOD_DEFAULT_NET,
                  fsname=LOD_DEFAULT_FSNAME, mountpoint=LOD_DEFAULT_MOUNTPOINT,
                  index=None):
         # pylint: disable=too-many-arguments
@@ -132,16 +135,12 @@ class LodConfig(object):
         self.lc_fsname = fsname
         self.lc_net = net
         self.lc_device = device
-        if mdt_device is not None:
-            self.lc_mdt_device = mdt_device
-        else:
-            self.lc_mdt_device = self.lc_device
-        if ost_device is not None:
-            self.lc_ost_device = ost_device
-        else:
-            self.lc_ost_device = self.lc_device
-        self.lc_mds_list = mds_list
-        self.lc_oss_list = oss_list
+        self.lc_mdt_device = self.lc_device
+        self.lc_ost_device = self.lc_device
+        self.lc_mdt_mapping = mdt_mapping
+        self.lc_ost_mapping = ost_mapping
+        self.lc_mds_list = mdt_mapping.keys()
+        self.lc_oss_list = ost_mapping.keys()
         self.lc_client_list = client_list
         self.lc_mountpoint = mountpoint
         self.lc_index = index
@@ -151,10 +150,11 @@ class LodConfig(object):
         Validate lod config
         """
         # pylint: disable=too-many-return-statements,too-many-branches
-        if self.lc_mdt_device is None or len(self.lc_mdt_device) == 0:
+        if len(self.lc_mdt_mapping) == 0:
             logging.error("mdt_device is None or Empty.")
             return False
-        if self.lc_ost_device is None or len(self.lc_ost_device) == 0:
+
+        if len(self.lc_ost_mapping) == 0:
             logging.error("device is None or Empty.")
             return False
 
@@ -177,39 +177,10 @@ class LodConfig(object):
             logging.error("Invalid node list %s.", self.lc_node_list)
             return False
 
-        # if mds_list is None, choose the first node for node list as mds
-        if self.lc_mds_list is None or len(self.lc_mds_list) == 0:
-            self.lc_mds_list = [self.lc_node_list[0]]
-
-        # if oss_list is None, will use all the nodes
-        if self.lc_oss_list is None or len(self.lc_oss_list) == 0:
-            self.lc_oss_list = copy.deepcopy(self.lc_node_list)
-
-        # if client_list is None, will use all the nodes
-        if self.lc_client_list is None or len(self.lc_client_list) == 0:
-            self.lc_client_list = copy.deepcopy(self.lc_node_list)
-
-        # mds_list, oss_list, clent_list should be contained in node_list
-        if not set(self.lc_mds_list) <= set(self.lc_node_list):
-            logging.error("mds_list not contained in node_list, %s/%s.",
-                          self.lc_mds_list, self.lc_node_list)
-            return False
-
-        if not set(self.lc_oss_list) <= set(self.lc_node_list):
-            logging.error("oss_list not contained in node_list, %s/%s.",
-                          self.lc_oss_list, self.lc_node_list)
-            return False
-
         if not set(self.lc_client_list) <= set(self.lc_node_list):
             logging.error("client_list not contained in node_list, %s/%s.",
                           self.lc_client_list, self.lc_node_list)
             return False
-
-        # change MDT OST format to [node]:[dev1],[dev2] ?
-        # e.g. --mdt vm1:/dev/sda --ost vm1:/dev/sdb,/dev/sdc --ost vm2:/dev/sdc
-        # TIPS:mds_list and oss_list should can be mixed
-        # mds: vm1, vm2
-        # oss: vm1, vm2
         return True
 
 
@@ -217,49 +188,62 @@ class Lod(object):
     """
     Lod Node
     """
+    # pylint: disable=too-many-instance-attributes
     def __init__(self, lod_config):
         self.lod_initialized = False
         self.lod_mounted = False
         self.lod_used = False
-        self.lod_mds_nodes = list()
-        self.lod_oss_nodes = list()
+        self.lod_mdt_services = list()
+        self.lod_mds_nodes = lod_config.lc_mdt_mapping.keys()
+        self.lod_ost_services = list()
+        self.lod_oss_nodes = lod_config.lc_ost_mapping.keys()
         self.lod_client_nodes = list()
-        mdt_device = lod_config.lc_mdt_device
-        ost_device = lod_config.lc_ost_device
         net = lod_config.lc_net
         fsname = lod_config.lc_fsname
         mountpoint = lod_config.lc_mountpoint
 
-        if (len(lod_config.lc_mds_list) == 0 or len(lod_config.lc_oss_list) == 0 or
-                len(lod_config.lc_client_list) == 0):
-            logging.error("mds_list/oss_list/client_list are invalid, %s/%s/%s.",
-                          lod_config.lc_mds_list, lod_config.lc_oss_list,
-                          lod_config.lc_client_list)
-            return None
-
         mgs_node = lod_config.lc_mds_list[0]
-        for i, mds in enumerate(lod_config.lc_mds_list):
-            self.lod_mds_nodes.append(LodMds(mds, mdt_device, mgs_node, i, fsname, net=net))
 
-        if len(self.lod_mds_nodes) < 1:
-            logging.error("No mds node found, request at least 1, %s.", self.lod_mds_nodes)
-            return None
+        i = 0
+        for node, devs in lod_config.lc_mdt_mapping.items():
+            assert isinstance(devs, list)
+            for dev in devs:
+                self.lod_mdt_services.append(LodMds(node, dev, mgs_node, i, fsname, net=net))
+                i += 1
+        i = 0
+        for node, devs in lod_config.lc_ost_mapping.items():
+            assert isinstance(devs, list)
+            for dev in devs:
+                self.lod_ost_services.append(LodOss(node, dev, mgs_node, i, fsname, net=net))
+                i += 1
 
-        for i, oss in enumerate(lod_config.lc_oss_list):
-            self.lod_oss_nodes.append(LodOss(oss, ost_device, mgs_node, i, fsname, net=net))
-
-        if len(self.lod_oss_nodes) < 1:
-            logging.error("No oss node found, request at least 1, %s.", self.lod_oss_nodes)
-            return None
-
-        for i, client in enumerate(lod_config.lc_client_list):
+        for client in lod_config.lc_client_list:
             self.lod_client_nodes.append(LodClient(client, mgs_node, fsname, mountpoint, net=net))
+        self.lod_index = lod_config.lc_index
 
         if len(self.lod_client_nodes) < 1:
             logging.error("No client node found, request at least 1, %s.",
                           self.lod_client_nodes)
             return None
         self.lod_index = lod_config.lc_index
+
+    def check(self):
+        """
+        Check the parameters
+        """
+        if len(self.lod_mdt_services) < 1:
+            logging.error("No mds node found, request at least 1, %s.", self.lod_mdt_services)
+            return False
+
+        if len(self.lod_ost_services) < 1:
+            logging.error("No oss node found, request at least 1, %s.", self.lod_ost_services)
+            return False
+
+        if len(self.lod_client_nodes) < 1:
+            logging.error("No client node found, request at least 1, %s.",
+                          self.lod_client_nodes)
+            return False
+        return True
 
     def do_action(self, action):
         """
@@ -297,8 +281,8 @@ class Lod(object):
         MOUNTPOINT: /mnt/lod
         """
         utils.eprint("Operator: %s" % OPERATOR)
-        utils.eprint("MDS: %s" % [mds_node.ln_hostname for mds_node in self.lod_mds_nodes])
-        for mds_node in self.lod_mds_nodes:
+        utils.eprint("MDS: %s" % self.lod_mds_nodes)
+        for mds_node in self.lod_mdt_services:
             if mds_node.lm_index == 0:
                 utils.eprint("	%10s: %s	---> %s" %
                              ("mgs", mds_node.lm_mgt, mds_node.ln_hostname))
@@ -306,8 +290,8 @@ class Lod(object):
             utils.eprint("	%10s: %s	---> %s" %
                          (mdt_name, mds_node.lm_mdt, mds_node.ln_hostname))
 
-        utils.eprint("OSS: %s" % [oss_node.ln_hostname for oss_node in self.lod_oss_nodes])
-        for oss_node in self.lod_oss_nodes:
+        utils.eprint("OSS: %s" % self.lod_oss_nodes)
+        for oss_node in self.lod_ost_services:
             utils.eprint("	%10s: %s	---> %s" %
                          ("ost%d" % oss_node.lo_index,
                           oss_node.lo_ost, oss_node.ln_hostname))
@@ -327,14 +311,14 @@ class Lod(object):
         if self.lod_initialized and not force:
             return 0
 
-        results = lod_parallel_do_action(self.lod_mds_nodes, "mkfs")
+        results = lod_parallel_do_action(self.lod_mdt_services, "mkfs")
         for mds, ret in results:
             if ret.get() < 0:
                 logging.error("failed to format device[%s] on [%s].",
                               mds.lm_mdt, mds.ln_hostname)
                 return -1
 
-        results = lod_parallel_do_action(self.lod_oss_nodes, "mkfs")
+        results = lod_parallel_do_action(self.lod_ost_services, "mkfs")
         for oss, ret in results:
             if ret.get() < 0:
                 logging.error("failed to format device[%s] on [%s].",
@@ -352,13 +336,13 @@ class Lod(object):
             if ret:
                 return -1
 
-        for mds in self.lod_mds_nodes:
+        for mds in self.lod_mdt_services:
             if mds.mount():
                 logging.error("failed to mount device[%s] on [%s].",
                               mds.lm_mdt, mds.ln_hostname)
                 return -1
 
-        results = lod_parallel_do_action(self.lod_oss_nodes, "mount")
+        results = lod_parallel_do_action(self.lod_ost_services, "mount")
         for oss, ret in results:
             if ret.get() < 0:
                 logging.error("failed to mount device[%s] on [%s].",
@@ -382,14 +366,14 @@ class Lod(object):
                 logging.error("failed to umount lod client on [%s].", client.ln_hostname)
                 return -1
 
-        results = lod_parallel_do_action(self.lod_oss_nodes, "umount")
+        results = lod_parallel_do_action(self.lod_ost_services, "umount")
         for oss, ret in results:
             if ret.get() < 0:
                 logging.error("failed to mount lod ost device[%s] on [%s].",
                               oss.lo_ost, oss.ln_hostname)
                 return -1
 
-        for mds in list(reversed(self.lod_mds_nodes)):
+        for mds in list(reversed(self.lod_mdt_services)):
             if mds.umount():
                 logging.error("failed to umount lod mdt device[%s] on [%s].",
                               mds.lm_mdt, mds.ln_hostname)
@@ -484,9 +468,9 @@ class LodStage(object):
         return ret
 
 
-class LodNode(object):
+class LodService(object):
     """
-    Lod Node
+    Basic class, Lod servire
     """
     def __init__(self, hostname, mgs, fsname,
                  mountpoint, net, args=None):
@@ -588,7 +572,7 @@ class LodNode(object):
         return 0
 
 
-class LodMds(LodNode):
+class LodMds(LodService):
     """
     Lod Mds
     """
@@ -711,7 +695,7 @@ class LodMds(LodNode):
         return 0
 
 
-class LodOss(LodNode):
+class LodOss(LodService):
     """
     Lod Mds
     """
@@ -750,7 +734,7 @@ class LodOss(LodNode):
         return self.run(command)
 
 
-class LodClient(LodNode):
+class LodClient(LodService):
     """
     Lod Mds
     """
@@ -774,8 +758,63 @@ class LodClient(LodNode):
         return self.run(command)
 
 
-def lod_build_config(slurm_nodes, mds_list, oss_list, fsname, mdtdevs, ostdevs,
-                     inet, mountpoint, index):
+def lod_parse_devs(dev_str, dev_dict):
+    """
+    Parse ost/mdt device string
+    :param dev_str: vm1:/dev/sdb,/dev/sda;vm2:/dev/sdc,/dev/sdx
+    :param dev_dict: {vm1: [/dev/sdb,/dev/sda], vm2:[/dev/sdc,/dev/sdx]}
+    :return: 0 success -1 on error
+    """
+    assert isinstance(dev_str, str)
+    assert isinstance(dev_dict, dict)
+
+    # invalid string
+    if dev_str.find(LOD_NODE_SPLIT) < 0 and dev_str.find(LOD_REGION_SPLIT) < 0:
+        logging.error("invalid device string %s\n", dev_str)
+        return -1
+
+    # split to get each vm substring
+    for sub_str in dev_str.split(LOD_REGION_SPLIT):
+        sub_arr = sub_str.split(LOD_NODE_SPLIT)
+        if len(sub_arr) != 2:
+            logging.error("invalid device string %s\n", sub_arr)
+            return -1
+        node = sub_arr[0]
+        devs = sub_arr[1]
+        dev_list = devs.split(LOD_DEV_SPLIT)
+        if node in dev_dict:
+            node_devs = dev_dict[node]
+            dev_list = list(set(node_devs + dev_list))
+        dev_dict[node] = dev_list
+    return 0
+
+
+def lod_build_dev_host_mapping(node_list, dev_list):
+    """
+    Validate node/mdt node/ost mapping
+    :param node_list:
+    :param dev_list:
+    :return: mapping; None on fail/error
+    """
+    assert isinstance(node_list, list)
+    assert isinstance(dev_list, list)
+
+    if len(node_list) == 0:
+        logging.error("node list is empty\n")
+        return None
+
+    if len(dev_list) == 0:
+        logging.error("dev list is empty\n")
+        return None
+
+    dev_dict = dict()
+    for node in node_list:
+        dev_dict[node] = dev_list
+    return dev_dict
+
+
+def lod_build_config(slurm_nodes, mdt_mapping, ost_mapping,
+                     fsname, inet, mountpoint, index):
     """
     Build lod configuration for LOD instance
     """
@@ -793,15 +832,11 @@ def lod_build_config(slurm_nodes, mds_list, oss_list, fsname, mdtdevs, ostdevs,
         net = LOD_DEFAULT_NET
 
     device = None
-    if mdtdevs is not None and len(mdtdevs) > 0:
-        mdt_device = mdtdevs
-    else:
+    if len(mdt_mapping) == 0:
         logging.error("no mdtdevs found")
         return None
 
-    if ostdevs is not None and len(ostdevs) > 0:
-        ost_device = ostdevs
-    else:
+    if len(ost_mapping) == 0:
         logging.error("no ostdevs found")
         return None
 
@@ -815,9 +850,11 @@ def lod_build_config(slurm_nodes, mds_list, oss_list, fsname, mdtdevs, ostdevs,
     else:
         mount_point = LOD_DEFAULT_MOUNTPOINT
 
-    return LodConfig(node_list, device, mdt_device, ost_device,
-                     mds_list, oss_list, client_list,
-                     net, fs_name, mount_point, index)
+    lod_conf = LodConfig(node_list, device, mdt_mapping, ost_mapping,
+                         client_list, net, fs_name, mount_point, index)
+    if not lod_conf.adjust_and_validate():
+        return None
+    return lod_conf
 
 
 def devide_zero_prefix_index(number):
@@ -885,6 +922,24 @@ def configure_logging():
     logging.root.addHandler(console_handler)
 
 
+def lod_validate_devs(ost_mapping, mdt_mapping):
+    """
+    Validate specified ost/mdt, one device on the server can only be used as ost or mdt.
+    key: hostname, values: device list
+    """
+    assert isinstance(ost_mapping, dict)
+    assert isinstance(mdt_mapping, dict)
+
+    for node in ost_mapping:
+        if node in mdt_mapping:
+            mix_set = set(ost_mapping[node]).intersection(set(mdt_mapping[node]))
+            if len(mix_set) > 0:
+                logging.error("Device %s on server [%s] used as both OST and MDT\n",
+                              mix_set, node)
+                return False
+    return True
+
+
 def main():
     """
     Run LOD (Lustre On Demand)
@@ -917,17 +972,19 @@ def main():
 
     dry_run = False
     fsname = None
-    mdtdevs = None
-    ostdevs = None
+    mdtdevs = list()
+    ostdevs = list()
     node_list = None
-    mds_list = None
-    oss_list = None
+    mds_list = list()
+    oss_list = list()
     inet = None
     mountpoint = None
     index = lod_generate_random_str(24)
     source = None
     sourcelist = None
     dest = None
+    mdt_mapping = dict()
+    ost_mapping = dict()
 
     global OPERATOR
     global MPIRUN
@@ -938,7 +995,7 @@ def main():
         elif opt in ('-f', '--fsname'):
             fsname = arg
         elif opt in ('-m', '--mdtdevs'):
-            mdtdevs = arg
+            mdtdevs.append(arg)
         elif opt in ('-T', '--mds'):
             mds_list = arg
         elif opt in ('-O', '--oss'):
@@ -946,7 +1003,7 @@ def main():
         elif opt in ('-n', '--node'):
             node_list = arg
         elif opt in ('-o', '--ostdevs'):
-            ostdevs = arg
+            ostdevs.append(arg)
         elif opt in ('-i', '--inet'):
             inet = arg
         elif opt in ('-p', '--mountpoint'):
@@ -983,10 +1040,10 @@ def main():
 
     if "SLURM_JOB_NODELIST" in os.environ:
         slurm_node_string = os.environ["SLURM_JOB_NODELIST"]
-        logging.error("SLURM_JOB_NODELIST: %s", slurm_node_string)
+        logging.debug("SLURM_JOB_NODELIST: %s", slurm_node_string)
     elif "SLURM_NODELIST" in os.environ:
         slurm_node_string = os.environ["SLURM_NODELIST"]
-        logging.error("SLURM_NODELIST: %s", slurm_node_string)
+        logging.debug("SLURM_NODELIST: %s", slurm_node_string)
 
     if len(slurm_node_string) > 0:
         slurm_node_array = parse_slurm_node_string(slurm_node_string)
@@ -1008,7 +1065,7 @@ def main():
 
         lod_nodes = list()
         for node in slurm_node_array:
-            lod_node = LodNode(node, None, None, None, None, None)
+            lod_node = LodService(node, None, None, None, None, None)
             lod_nodes.append(lod_node)
 
         lod_stage = LodStage(lod_nodes, source, sourcelist, dest)
@@ -1039,20 +1096,55 @@ def main():
         logging.error("no mountpoint specified")
         sys.exit(-1)
 
-    lod_conf = lod_build_config(slurm_node_array, mds_list, oss_list,
-                                fsname, mdtdevs, ostdevs,
-                                inet, mountpoint, index)
-    if lod_conf is None:
+    # parse ostdevs mdtdevs
+    ostdev_list = list()
+    mdtdev_list = list()
+    for dev_str in ostdevs:
+        if dev_str.find(LOD_REGION_SPLIT) >= 0 or dev_str.find(LOD_NODE_SPLIT) >= 0:
+            lod_parse_devs(dev_str, ost_mapping)
+        else:
+            for dev in dev_str.split(LOD_DEV_SPLIT):
+                ostdev_list.append(dev)
+    for dev_str in mdtdevs:
+        if dev_str.find(LOD_REGION_SPLIT) >= 0 or dev_str.find(LOD_NODE_SPLIT) >= 0:
+            lod_parse_devs(dev_str, mdt_mapping)
+        else:
+            for dev in dev_str.split(LOD_DEV_SPLIT):
+                mdtdev_list.append(dev)
+
+    # if mds_list is None, choose the first node for node list as mds
+    if len(mds_list) == 0:
+        mds_list.append(slurm_node_array[0])
+
+    # if oss_list is None, will use all the nodes
+    if len(oss_list) == 0:
+        oss_list = copy.deepcopy(slurm_node_array)
+
+    # didn't generate mdt/ost mapping from mdtdevs string, build it now
+    if len(mdt_mapping) == 0:
+        mdt_mapping = lod_build_dev_host_mapping(mds_list, mdtdev_list)
+        if mdt_mapping is None:
+            logging.error("failed to build mdt mapping from [%s]/[%s]\n",
+                          mds_list, mdtdev_list)
+            sys.exit(-1)
+    if len(ost_mapping) == 0:
+        ost_mapping = lod_build_dev_host_mapping(oss_list, ostdev_list)
+        if ost_mapping is None:
+            logging.error("failed to build ost mapping from [%s]/[%s]\n",
+                          oss_list, ostdev_list)
+            sys.exit(-1)
+
+    if not lod_validate_devs(ost_mapping, mdt_mapping):
         sys.exit(-1)
 
-    ret = lod_conf.adjust_and_validate()
-    if not ret:
-        logging.error("invalid lod options, please correct it.\n%s",
-                      sys.argv[1:])
+    lod_conf = lod_build_config(slurm_node_array, mdt_mapping, ost_mapping,
+                                fsname, inet, mountpoint, index)
+    if lod_conf is None:
+        logging.error("invalid configuration [%s], please correct it.", sys.argv)
         sys.exit(-1)
 
     lod = Lod(lod_conf)
-    if lod is None:
+    if lod.check() is False:
         logging.error("failed to create LOD, please correct options.\n%s",
                       sys.argv[1:])
         sys.exit(-1)
