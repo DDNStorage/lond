@@ -147,5 +147,6 @@ AC_SUBST(ac_configure_args)
 AC_CONFIG_FILES([Makefile
                  lond.spec
                  src/Makefile
-                 pylond/Makefile])
+                 pylond/Makefile
+                 pylcommon/Makefile])
 AC_OUTPUT

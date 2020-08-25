@@ -77,6 +77,7 @@ mkdir -p $RPM_BUILD_ROOT%{_sbindir}
 mkdir -p $RPM_BUILD_ROOT%{_sysconfdir}
 mkdir -p $RPM_BUILD_ROOT%{_datadir}/lod_slurm
 mkdir -p $RPM_BUILD_ROOT%{python_sitelib}/pylond
+mkdir -p $RPM_BUILD_ROOT%{python_sitelib}/pylcommon
 cp -a lod $RPM_BUILD_ROOT%{_sbindir}
 cp -a lond $RPM_BUILD_ROOT%{_bindir}
 cp -a src/lond_fetch $RPM_BUILD_ROOT%{_bindir}
@@ -87,6 +88,7 @@ cp -a src/lond_copytool $RPM_BUILD_ROOT%{_sbindir}
 cp -a lond_copytoold $RPM_BUILD_ROOT%{_sbindir}
 cp -a lod_slurm/* $RPM_BUILD_ROOT%{_datadir}/lod_slurm
 cp -a pylond/*.py $RPM_BUILD_ROOT%{python_sitelib}/pylond
+cp -a pylcommon/*.py $RPM_BUILD_ROOT%{python_sitelib}/pylcommon
 %if %{with systemd}
     mkdir -p $RPM_BUILD_ROOT/usr/lib/systemd/system/
     install -m 0644 -D systemd/lond_copytoold.service \
@@ -101,6 +103,7 @@ rm -rf $RPM_BUILD_ROOT
 %{_sbindir}/lod
 %{_datadir}/lod_slurm
 %{python_sitelib}/pylond
+%{python_sitelib}/pylcommon
 %{_bindir}/lond
 %{_bindir}/lond_fetch
 %{_bindir}/lond_sync
@@ -113,5 +116,7 @@ rm -rf $RPM_BUILD_ROOT
 %endif
 
 %changelog
+* Tue Aug 25 2020 Gu Zheng <gzheng@ddn.com> 0.1
+- Add pylcommon libs
 * Wed Apr 3 2019 Li Xi <lixi@ddn.com> 0.1
 - Initial version
