@@ -1,4 +1,4 @@
-SUBDIRS = src pylond .
+SUBDIRS = src pylond pylcommon .
 
 build_dir = `pwd`/build
 rpmbuild_opt =
