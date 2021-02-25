@@ -243,19 +243,17 @@ class SSHHost(object):
 
         if no_lsb:
             ret = self.sh_run(log, "uname -r")
-            if ret.cr_exit_status != 0:
+            if ret.cr_exit_status:
                 log.cl_error("lsb_release is needed on host [%s] for accurate "
                              "distro identification", self.sh_hostname)
                 return None
-            else:
-                if "el7" in ret.cr_stdout:
-                    self.sh_cached_distro = DISTRO_RHEL7
-                    return DISTRO_RHEL7
-                elif "el6" in ret.cr_stdout:
-                    self.sh_cached_distro = DISTRO_RHEL6
-                    return DISTRO_RHEL6
-                else:
-                    return None
+            if "el7" in ret.cr_stdout:
+                self.sh_cached_distro = DISTRO_RHEL7
+                return DISTRO_RHEL7
+            if "el6" in ret.cr_stdout:
+                self.sh_cached_distro = DISTRO_RHEL6
+                return DISTRO_RHEL6
+            return None
 
         ret = self.sh_run(log, "lsb_release -s -i")
         if ret.cr_exit_status != 0:
@@ -281,13 +279,12 @@ class SSHHost(object):
             if version.startswith("7"):
                 self.sh_cached_distro = DISTRO_RHEL7
                 return DISTRO_RHEL7
-            elif version.startswith("6"):
+            if version.startswith("6"):
                 self.sh_cached_distro = DISTRO_RHEL6
                 return DISTRO_RHEL6
-            else:
-                log.cl_error("unsupported version [%s] of [%s] on host [%s]",
-                             version, "rhel", self.sh_hostname)
-                return None
+            log.cl_error("unsupported version [%s] of [%s] on host [%s]",
+                         version, "rhel", self.sh_hostname)
+            return None
         elif name == "EnterpriseEnterpriseServer":
             log.cl_error("unsupported version [%s] of [%s] on host [%s]",
                          version, "oel", self.sh_hostname)
@@ -327,7 +324,7 @@ class SSHHost(object):
             return 0
 
         ret = self.sh_run(log, "getent group %s" % (gid))
-        if ret.cr_exit_status != 0 and len(ret.cr_stdout.strip()) != 0:
+        if ret.cr_exit_status and ret.cr_stdout.strip():
             log.cl_warning("failed to check gid [%s] on host "
                            "[%s], ret = [%d], stdout = [%s], stderr = [%s]",
                            gid, self.sh_hostname, ret.cr_exit_status,
@@ -468,7 +465,7 @@ class SSHHost(object):
         """
 
         # non-trailing slash paths should just work
-        if len(path) == 0 or path[-1] != "/":
+        if (not path) or path[-1] != "/":
             return [path]
 
         # make a function to test if a pattern matches any files
@@ -478,7 +475,7 @@ class SSHHost(object):
                 Match the files on local host
                 """
                 # pylint: disable=unused-argument
-                return len(glob.glob(path + pattern)) > 0
+                return bool(glob.glob(path + pattern))
         else:
             def glob_matches_files(log, path, pattern):
                 """
@@ -496,9 +493,8 @@ class SSHHost(object):
         if is_local:
             return ["\"%s\"%s" % (sh_escape(path), pattern)
                     for pattern in patterns]
-        else:
-            return [scp_remote_escape(path) + pattern
-                    for pattern in patterns]
+        return [scp_remote_escape(path) + pattern
+                for pattern in patterns]
 
     def sh_make_scp_cmd(self, sources, dest):
         """
@@ -725,7 +721,7 @@ class SSHHost(object):
                          self.sh_hostname)
             return -1
 
-        if len(zfs_pools) == 0:
+        if not zfs_pools:
             return 0
 
         for zfs_pool in zfs_pools:
@@ -747,7 +743,7 @@ class SSHHost(object):
                          self.sh_hostname)
             return -1
 
-        if len(zfs_pools) > 0:
+        if zfs_pools:
             log.cl_error("failed to destroy all ZFS pools on host [%s], "
                          "still has pools %s",
                          self.sh_hostname, zfs_pools)
@@ -884,7 +880,7 @@ class SSHHost(object):
                                  retval.cr_stderr)
                     return -1
         elif (retval.cr_exit_status == 1 and
-              len(retval.cr_stdout) == 0):
+              not retval.cr_stdout):
             log.cl_debug("no rpm can be find by command [%s] on host [%s], "
                          "no need to uninstall",
                          command, self.sh_hostname)
@@ -1093,8 +1089,7 @@ class SSHHost(object):
                                  tmp_mount_point, self.sh_hostname,
                                  tmp_fstype, fstype)
                     return -1
-                else:
-                    return 1
+                return 1
         return 0
 
     def sh_device_mounted(self, log, device):
@@ -1483,8 +1478,7 @@ class SSHHost(object):
             return retval.cr_exit_status
         if written == size:
             return 0
-        else:
-            return self.sh_truncate(log, fpath, size)
+        return self.sh_truncate(log, fpath, size)
 
     def sh_rpm_query(self, log, rpm_name):
         """

@@ -794,7 +794,7 @@ class LustreService(object):
         Mount this service, lock should be held
         """
         log.cl_stdout("mounting service [%s]", self.ls_service_name)
-        if len(self.ls_instances) == 0:
+        if not self.ls_instances:
             return -1
 
         instance = self._ls_mounted_instance(log)
@@ -840,7 +840,7 @@ class LustreService(object):
         If no instance is mounted, return None
         Read lock of the service should be held when calling this function
         """
-        if len(self.ls_instances) == 0:
+        if not self.ls_instances:
             return None
 
         mounted_instances = []
@@ -857,11 +857,10 @@ class LustreService(object):
                              instance.lsi_host.sh_hostname)
                 mounted_instances.append(instance)
 
-        if len(mounted_instances) == 0:
+        if not mounted_instances:
             return None
-        else:
-            assert len(mounted_instances) == 1
-            return mounted_instances[0]
+        assert len(mounted_instances) == 1
+        return mounted_instances[0]
 
     def ls_mounted_instance(self, log):
         """
@@ -916,7 +915,7 @@ class LustreService(object):
         Format this service.
         Service should have been umounted, Lock should be held.
         """
-        if len(self.ls_instances) == 0:
+        if not self.ls_instances:
             return -1
 
         log.cl_stdout("formatting service [%s]", self.ls_service_name)
@@ -957,13 +956,11 @@ class LustreService(object):
                 if status is None:
                     return {cstr.CSTR_SERVICE_NAME: service_name,
                             cstr.CSTR_STATUS: None}
-                else:
-                    return status.lss_encode(False)
-            else:
-                instance_names = []
-                for instance in self.ls_instances.values():
-                    instance_names.append(instance.lsi_service_instance_name)
-                return instance_names
+                return status.lss_encode(False)
+            instance_names = []
+            for instance in self.ls_instances.values():
+                instance_names.append(instance.lsi_service_instance_name)
+            return instance_names
 
         service_code = {}
         instance_codes = []
@@ -1124,9 +1121,8 @@ class LustreFilesystem(object):
         if self.lf_mgs_mdt is None:
             assert self.lf_mgs is not None
             return self.lf_mgs.ls_nids()
-        else:
-            assert self.lf_mgs is None
-            return self.lf_mgs_mdt.ls_nids()
+        assert self.lf_mgs is None
+        return self.lf_mgs_mdt.ls_nids()
 
     def lf_set_jobid_var(self, log, jobid_var):
         """
@@ -1244,7 +1240,7 @@ class LustreFilesystem(object):
         Write lock of the MGS and file system should be held
         """
         log.cl_stdout("formatting file system [%s]", self.lf_fsname)
-        if len(self.lf_mgs_nids()) == 0:
+        if not self.lf_mgs_nids():
             log.cl_stderr("the MGS nid of Lustre file system [%s] is not "
                           "configured, not able to format", self.lf_fsname)
             return -1
@@ -1712,7 +1708,7 @@ class LustreMDT(LustreService):
         Prevent congestion by defining TBF rules to the server
         Lock should be held
         """
-        if len(self.ls_instances) == 0:
+        if not self.ls_instances:
             return -1
 
         instance = self._ls_mounted_instance(log)
@@ -1962,8 +1958,7 @@ class LustreClient(object):
             if need_status:
                 return {cstr.CSTR_CLIENT_NAME: self.lc_client_name,
                         cstr.CSTR_STATUS: cstr.CSTR_UNKNOWN}
-            else:
-                return []
+            return []
         else:
             encoded = {cstr.CSTR_CLIENT_NAME: self.lc_client_name,
                        cstr.CSTR_HOST_ID: self.lc_host.sh_host_id,
@@ -2076,7 +2071,7 @@ def match_rpm_patterns(log, data, rpm_dict, possible_versions):
         if matched:
             matched_versions.append(version)
 
-    if len(matched_versions) != 0:
+    if matched_versions:
         if rpm_type in rpm_dict:
             log.cl_error("multiple match of RPM type [%s], both from [%s] "
                          "and [%s]", rpm_type, rpm_name, rpm_dict[rpm_type])
@@ -3585,11 +3580,11 @@ class LustreServerHost(ssh_host.SSHHost):
         """
         if not need_structure and not need_status:
             children = []
-            if len(self.lsh_ost_instances) > 0:
+            if self.lsh_ost_instances:
                 children.append(cstr.CSTR_OSTS)
-            if len(self.lsh_mdt_instances) > 0:
+            if self.lsh_mdt_instances:
                 children.append(cstr.CSTR_MDTS)
-            if len(self.lsh_clients) > 0:
+            if self.lsh_clients:
                 children.append(cstr.CSTR_CLIENTS)
             if self.lsh_mgsi is not None:
                 children.append(cstr.CSTR_MGS)
@@ -3603,21 +3598,21 @@ class LustreServerHost(ssh_host.SSHHost):
         for mdti in self.lsh_mdt_instances.values():
             mdt_instances.append(mdti.lsi_encode(need_status, status_func,
                                                  need_structure))
-        if len(mdt_instances) > 0:
+        if mdt_instances:
             encoded[cstr.CSTR_MDT_INSTANCES] = mdt_instances
 
         ost_instances = []
         for osti in self.lsh_ost_instances.values():
             ost_instances.append(osti.lsi_encode(need_status, status_func,
                                                  need_structure))
-        if len(ost_instances) > 0:
+        if ost_instances:
             encoded[cstr.CSTR_OST_INSTANCES] = ost_instances
 
         clients = []
         for client in self.lsh_clients.values():
             clients.append(client.lc_encode(need_status, status_func,
                                             need_structure))
-        if len(clients) > 0:
+        if clients:
             encoded[cstr.CSTR_CLIENTS] = clients
         return encoded
 

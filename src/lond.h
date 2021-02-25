@@ -120,7 +120,7 @@ struct nftw_private_fetch {
 	 * after copying started with source directory locked. So there is no
 	 * need to init it before calling nftw.
 	 */
-	char npf_dest_source_dir[PATH_MAX + 1];
+	char npf_dest_source_dir[PATH_MAX + 2];
 	/* Hash table to check whether the inode is already created before */
 	struct dest_entry *npf_dest_entry_table;
 };
@@ -133,7 +133,7 @@ struct nftw_private_sync {
 	 * after copying started with source directory locked. So there is no
 	 * need to init it before calling nftw.
 	 */
-	char	 nps_dest_source_dir[PATH_MAX + 1];
+	char	 nps_dest_source_dir[PATH_MAX + 2];
 	/* Hash table to check whether the inode is already created before */
 	struct	 dest_entry *nps_dest_entry_table;
 	/* Mount point of dest */

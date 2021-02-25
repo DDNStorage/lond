@@ -96,6 +96,7 @@ def nuke_subprocess(subproc):
         signal_pid(subproc.pid, sig)
         if subproc.poll() is not None:
             return subproc.poll()
+    return 0
 
 
 class CommandResult(object):
@@ -256,7 +257,7 @@ class CommandJob(object):
             tmp_data = []
             while select.select([pipe], [], [], 0)[0]:
                 tmp_data.append(os.read(pipe.fileno(), 1024))
-                if len(tmp_data[-1]) == 0:
+                if tmp_data[-1]:
                     break
             data = "".join(tmp_data)
         else:
@@ -476,20 +477,19 @@ def file_type2string(inode_type):
     # pylint: disable=unused-variable,too-many-return-statements
     if inode_type == stat.S_IFDIR:
         return "directory"
-    elif inode_type == stat.S_IFCHR:
+    if inode_type == stat.S_IFCHR:
         return "character_device"
-    elif inode_type == stat.S_IFBLK:
+    if inode_type == stat.S_IFBLK:
         return "block_device"
-    elif inode_type == stat.S_IFREG:
+    if inode_type == stat.S_IFREG:
         return "regular_file"
-    elif inode_type == stat.S_IFIFO:
+    if inode_type == stat.S_IFIFO:
         return "fifo"
-    elif inode_type == stat.S_IFLNK:
+    if inode_type == stat.S_IFLNK:
         return "symbolic_link"
-    elif inode_type == stat.S_IFSOCK:
+    if inode_type == stat.S_IFSOCK:
         return "socket"
-    else:
-        return None
+    return None
 
 
 class LimitResource(object):

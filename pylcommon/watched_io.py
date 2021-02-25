@@ -60,7 +60,7 @@ class WatchedIO(io.TextIOWrapper):
         And also, even the encoding should be utf-8
         there will be some error, so need to ignore it.
         """
-        #pylint: disable=bare-except
+        # pylint: disable=bare-except
         data = unicode(data, encoding='utf-8', errors='ignore')
         try:
             super(WatchedIO, self).write(data)
@@ -74,7 +74,7 @@ def log_watcher_debug(args, new_log):
     """
     Watch log dump to clog.cl_debug
     """
-    if len(new_log) == 0:
+    if not new_log:
         return
     log = args[WATCHEDIO_LOG]
     log.cl_debug("log from host [%s]: [%s]",
@@ -85,7 +85,7 @@ def log_watcher_info(args, new_log):
     """
     Watch log dump to clog.cl_info
     """
-    if len(new_log) == 0:
+    if not new_log:
         return
     log = args[WATCHEDIO_LOG]
     log.cl_info("log from host [%s]: [%s]",
@@ -96,7 +96,7 @@ def log_watcher_error(args, new_log):
     """
     Watch log dump to clog.cl_error
     """
-    if len(new_log) == 0:
+    if not new_log:
         return
     log = args[WATCHEDIO_LOG]
     log.cl_error("log from host [%s]: [%s]",
@@ -107,7 +107,7 @@ def log_watcher_info_simplified(args, new_log):
     """
     Watch log dump to clog.cl_info
     """
-    if len(new_log) == 0:
+    if not new_log:
         return
     log = args[WATCHEDIO_LOG]
     if new_log.endswith("\n"):
@@ -119,7 +119,7 @@ def log_watcher_error_simplified(args, new_log):
     """
     Watch log dump to clog.cl_error
     """
-    if len(new_log) == 0:
+    if not new_log:
         return
     log = args[WATCHEDIO_LOG]
     if new_log.endswith("\n"):

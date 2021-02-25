@@ -32,9 +32,6 @@ def main(default_config_fpath, default_log_parent, main_func):
     The main function of a command
     """
     # pylint: disable=too-many-locals,too-many-branches,too-many-statements
-    reload(sys)
-    sys.setdefaultencoding("utf-8")
-
     options, args = getopt.getopt(sys.argv[1:],
                                   "c:i:h",
                                   ["config=",
@@ -55,7 +52,7 @@ def main(default_config_fpath, default_log_parent, main_func):
             usage()
             sys.exit(1)
 
-    if len(args) != 0:
+    if args:
         usage()
         sys.exit(1)
 

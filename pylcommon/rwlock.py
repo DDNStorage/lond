@@ -45,7 +45,7 @@ class RWLockHandle(object):
             assert lock.rwl_write_handle == self
             lock.rwl_write_handle = None
 
-        while len(lock.rwl_waiting_handles) > 0:
+        while lock.rwl_waiting_handles:
             handle = lock.rwl_waiting_handles[0]
             if handle.rwh_is_read:
                 if lock.rwl_write_handle is not None:
@@ -54,7 +54,7 @@ class RWLockHandle(object):
             else:
                 if lock.rwl_write_handle is not None:
                     break
-                if len(lock.rwl_read_handles) > 0:
+                if lock.rwl_read_handles:
                     break
                 lock.rwl_write_handle = handle
             handle.rwh_dequeued = True
@@ -123,8 +123,8 @@ class RWLock(object):
         handle = RWLockHandle(self, is_read)
         self.rwl_condition.acquire()
         if ((self.rwl_write_handle is not None) or
-                (len(self.rwl_waiting_handles) > 0) or
-                ((not is_read) and len(self.rwl_read_handles) > 0)):
+                self.rwl_waiting_handles or
+                ((not is_read) and self.rwl_read_handles)):
             self.rwl_waiting_handles.append(handle)
             while not handle.rwh_dequeued:
                 if log.cl_abort:

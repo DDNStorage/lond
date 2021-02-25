@@ -121,7 +121,7 @@ def lond_command_fetch(interact, log, args):
             log.cl_error("please specify the dest directory")
             return -1
 
-        if len(sources) == 0:
+        if not sources:
             log.cl_error("please specify one or more source directories")
             return -1
 
@@ -239,9 +239,8 @@ def lond_command_help(interact, log, args):
                      "\n"
                      "    q         quit")
         return 0
-    else:
-        cmd_line = "%s -h" % args[1]
-        return interact.li_command(log, cmd_line)
+    cmd_line = "%s -h" % args[1]
+    return interact.li_command(log, cmd_line)
 
 
 LOND_COMMNAD_HELP = "h"
@@ -333,7 +332,7 @@ class LondInteract(object):
         log.cl_result.cr_clear()
         log.cl_abort = False
         args = cmd_line.split()
-        assert len(args) > 0
+        assert args
         command = args[0]
         if command not in LOND_COMMANDS:
             log.cl_stderr('unknown command [%s]', command)
@@ -375,7 +374,7 @@ class LondInteract(object):
                     continue
                 log.cl_debug("input: %s", cmd_line)
                 cmd_line = cmd_line.strip()
-                if len(cmd_line) == 0:
+                if not cmd_line:
                     continue
             else:
                 cmd_line = cmdline
@@ -401,8 +400,6 @@ def main():
     """
     Run LOND commands
     """
-    reload(sys)
-    sys.setdefaultencoding("utf-8")
     argc = len(sys.argv)
     if argc < 2:
         cmdline = None

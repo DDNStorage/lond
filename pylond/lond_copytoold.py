@@ -35,7 +35,7 @@ def start_copytool(log, host, source, dest):
     retval = host.sh_run(log, pgrep_command)
     if retval.cr_exit_status == 0:
         copytool_processes = retval.cr_stdout.splitlines()
-        if len(copytool_processes) > 0:
+        if copytool_processes:
             log.cl_info("copytool from [%s] to [%s] is already running as "
                         "process %s",
                         source, dest, copytool_processes)
@@ -54,7 +54,7 @@ def start_copytool(log, host, source, dest):
     retval = host.sh_run(log, pgrep_command)
     if retval.cr_exit_status == 0:
         copytool_processes = retval.cr_stdout.splitlines()
-        if len(copytool_processes) > 0:
+        if copytool_processes:
             log.cl_info("copytool from [%s] to [%s] is started as process %s",
                         source, dest, copytool_processes)
             return 0

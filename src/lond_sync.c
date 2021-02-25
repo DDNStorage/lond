@@ -11,6 +11,9 @@
 #define _GNU_SOURCE
 #endif
 #include <sys/types.h>
+#include <stdint.h>
+#include <attr/attributes.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <attr/xattr.h>
@@ -38,8 +41,8 @@ static int lond_copy(const char *source, const char *dest)
 {
 	int rc;
 	const char *base;
-	char dest_source_dir[PATH_MAX + 1];
-	char cmd[PATH_MAX + 1];
+	char dest_source_dir[PATH_MAX + 2];
+	char cmd[PATH_MAX * 2 + 12];
 	int cmdsz = sizeof(cmd);
 
 	base = basename(source);
@@ -270,7 +273,7 @@ static int nftw_sync_fn(const char *fpath, const struct stat *sb,
 	const char *base;
 	char cwd_buf[PATH_MAX];
 	int cwdsz = sizeof(cwd_buf);
-	char dest_dir[PATH_MAX];
+	char dest_dir[PATH_MAX + 3];
 	int dest_dir_size = sizeof(dest_dir);
 	char full_fpath[PATH_MAX];
 	/* The dest directory that contains the source basename */
@@ -366,7 +369,7 @@ static int lond_quick_sync(const char *source, const char *source_fsname,
 {
 	int rc;
 	const char *base;
-	char dest_source_dir[PATH_MAX + 1];
+	char dest_source_dir[PATH_MAX + 2];
 	int flags = FTW_PHYS;
 	char *dest_buffer = nftw_private.u.np_sync.nps_dest;
 	int dest_size = sizeof(nftw_private.u.np_sync.nps_dest);
@@ -541,12 +544,14 @@ int main(int argc, char *const argv[])
 		return -EINVAL;
 	}
 
-	strncpy(dest, argv[argc - 1], sizeof(dest));
+	strncpy(dest, argv[argc - 1], sizeof(dest) - 1);
+	dest[sizeof(dest) - 1] = '\0';
 	remove_slash_tail(dest);
 
 	lond_sync_nfwt_init(&nftw_private);
 	for (i = optind; i < argc - 1; i++) {
-		strncpy(source, argv[i], sizeof(source));
+		strncpy(source, argv[i], sizeof(source) - 1);
+		source[sizeof(source) - 1] = '\0';
 		remove_slash_tail(source);
 		rc = lond_sync(source, dest, copy);
 		if (rc) {

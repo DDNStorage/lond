@@ -148,7 +148,7 @@ static int nftw_fetch_fn(const char *fpath, const struct stat *sb,
 	const char *base;
 	char cwd_buf[PATH_MAX];
 	int cwdsz = sizeof(cwd_buf);
-	char dest_dir[PATH_MAX];
+	char dest_dir[PATH_MAX + 3];
 	int dest_dir_size = sizeof(dest_dir);
 	char full_fpath[PATH_MAX];
 	/* The dest directory that contains the source basename */
@@ -468,7 +468,8 @@ int main(int argc, char *const argv[])
 		return rc;
 	}
 
-	strncpy(dest, argv[argc - 1], dest_size);
+	strncpy(dest, argv[argc - 1], dest_size - 1);
+	dest[dest_size - 1] = '\0';
 	remove_slash_tail(dest);
 	if (strlen(dest) <= 0)
 		usage(progname);

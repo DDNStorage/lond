@@ -10,9 +10,12 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
+#include <sys/types.h>
+#include <stdint.h>
+#include <attr/attributes.h>
+#include <errno.h>
 #include <unistd.h>
 #include <stdlib.h>
-#include <sys/types.h>
 #include <sys/stat.h>
 #include <attr/xattr.h>
 #include <ftw.h>
@@ -703,7 +706,7 @@ static int stat_stack_update(struct lond_list_head *stack_list,
 	struct lond_xattr *parent_xattr;
 	struct lond_key *parent_key;
 	struct lond_key *key;
-	char parent_path[PATH_MAX + 1];
+	char parent_path[PATH_MAX + 2];
 	bool need_print;
 
 	top = stat_stack_top(stack_list);
@@ -718,7 +721,8 @@ static int stat_stack_update(struct lond_list_head *stack_list,
 		return -ENOMEM;
 	}
 
-	strncpy(entry->lse_path, fpath, sizeof(entry->lse_path));
+	strncpy(entry->lse_path, fpath, sizeof(entry->lse_path) - 1);
+	entry->lse_path[sizeof(entry->lse_path) - 1] = '\0';
 	entry->lse_immutable = immutable;
 	if (immutable)
 		memcpy(&entry->lse_global_xattr, lond_xattr,
@@ -736,7 +740,8 @@ static int stat_stack_update(struct lond_list_head *stack_list,
 			break;
 
 		/* Need to append / to parent path to avoid mismatch */
-		snprintf(parent_path, PATH_MAX + 1, "%s/", top->lse_path);
+		snprintf(parent_path, sizeof(parent_path), "%s/",
+			 top->lse_path);
 		if (strncmp(fpath, parent_path, strlen(parent_path)) == 0) {
 			parent = top;
 			break;

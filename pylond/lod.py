@@ -151,10 +151,10 @@ class LodConfig(object):
         Validate lod config
         """
         # pylint: disable=too-many-return-statements,too-many-branches
-        if self.lc_mdt_device is None or len(self.lc_mdt_device) == 0:
+        if not self.lc_mdt_device:
             logging.error("mdt_device is None or Empty.")
             return False
-        if self.lc_ost_device is None or len(self.lc_ost_device) == 0:
+        if not self.lc_ost_device:
             logging.error("device is None or Empty.")
             return False
 
@@ -178,15 +178,15 @@ class LodConfig(object):
             return False
 
         # if mds_list is None, choose the first node for node list as mds
-        if self.lc_mds_list is None or len(self.lc_mds_list) == 0:
+        if not self.lc_mds_list:
             self.lc_mds_list = [self.lc_node_list[0]]
 
         # if oss_list is None, will use all the nodes
-        if self.lc_oss_list is None or len(self.lc_oss_list) == 0:
+        if not self.lc_oss_list:
             self.lc_oss_list = copy.deepcopy(self.lc_node_list)
 
         # if client_list is None, will use all the nodes
-        if self.lc_client_list is None or len(self.lc_client_list) == 0:
+        if not self.lc_client_list:
             self.lc_client_list = copy.deepcopy(self.lc_node_list)
 
         # mds_list, oss_list, clent_list should be contained in node_list
@@ -230,12 +230,12 @@ class Lod(object):
         fsname = lod_config.lc_fsname
         mountpoint = lod_config.lc_mountpoint
 
-        if (len(lod_config.lc_mds_list) == 0 or len(lod_config.lc_oss_list) == 0 or
-                len(lod_config.lc_client_list) == 0):
+        if (not lod_config.lc_mds_list or not lod_config.lc_oss_list or
+                not lod_config.lc_client_list):
             logging.error("mds_list/oss_list/client_list are invalid, %s/%s/%s.",
                           lod_config.lc_mds_list, lod_config.lc_oss_list,
                           lod_config.lc_client_list)
-            return None
+            raise Exception("error")
 
         mgs_node = lod_config.lc_mds_list[0]
         for i, mds in enumerate(lod_config.lc_mds_list):
@@ -243,14 +243,14 @@ class Lod(object):
 
         if len(self.lod_mds_nodes) < 1:
             logging.error("No mds node found, request at least 1, %s.", self.lod_mds_nodes)
-            return None
+            raise Exception("error")
 
         for i, oss in enumerate(lod_config.lc_oss_list):
             self.lod_oss_nodes.append(LodOss(oss, ost_device, mgs_node, i, fsname, net=net))
 
         if len(self.lod_oss_nodes) < 1:
             logging.error("No oss node found, request at least 1, %s.", self.lod_oss_nodes)
-            return None
+            raise Exception("error")
 
         for i, client in enumerate(lod_config.lc_client_list):
             self.lod_client_nodes.append(LodClient(client, mgs_node, fsname, mountpoint, net=net))
@@ -258,7 +258,7 @@ class Lod(object):
         if len(self.lod_client_nodes) < 1:
             logging.error("No client node found, request at least 1, %s.",
                           self.lod_client_nodes)
-            return None
+            raise Exception("error")
         self.lod_index = lod_config.lc_index
 
     def do_action(self, action):
@@ -270,9 +270,8 @@ class Lod(object):
             func = getattr(self, action, None)
             if func is not None:
                 return func()
-            else:
-                logging.error("can't find valid function of action [%s], exit.", action)
-                return -1
+            logging.error("can't find valid function of action [%s], exit.", action)
+            return -1
         else:
             logging.error("invalid action [%s], expected one of %s.", action, VALID_OPTS)
             return -1
@@ -450,7 +449,7 @@ class LodStage(object):
             if node.has_command("dcp") and node.has_command("mpirun"):
                 lod_dcp_nodes.append(node)
 
-        if len(lod_dcp_nodes) == 0:
+        if not lod_dcp_nodes:
             if self.ls_stage_sourcelist is not None:
                 logging.error("No valid dcp and mpi-runtime found on nodes %s, exit",
                               [node.ln_hostname for node in self.ls_stage_nodes])
@@ -793,13 +792,13 @@ def lod_build_config(slurm_nodes, mds_list, oss_list, fsname, mdtdevs, ostdevs,
         net = LOD_DEFAULT_NET
 
     device = None
-    if mdtdevs is not None and len(mdtdevs) > 0:
+    if mdtdevs:
         mdt_device = mdtdevs
     else:
         logging.error("no mdtdevs found")
         return None
 
-    if ostdevs is not None and len(ostdevs) > 0:
+    if ostdevs:
         ost_device = ostdevs
     else:
         logging.error("no ostdevs found")
@@ -857,7 +856,7 @@ def parse_slurm_node_string(node_string):
             node_array.append(comname + start_raw)
             start_index = start_num + 1
             while start_index <= stop_num:
-                if start_zeros is not None and len(start_zeros) > 0:
+                if start_zeros:
                     # 9->10  99->100
                     if len(str(start_index)) > len(str(start_index - 1)):
                         start_zeros = start_zeros[-1]
@@ -891,12 +890,6 @@ def main():
     """
     # pylint: disable=unused-variable,bare-except,too-many-locals
     # pylint: disable=global-statement,too-many-branches,too-many-statements
-    reload(sys)
-    sys.setdefaultencoding("utf-8")
-
-    reload(sys)
-    sys.setdefaultencoding("utf-8")
-
     options, args = getopt.getopt(sys.argv[1:],
                                   "dT:O:f:m:n:o:i:p:s:S:D:M:hI:",
                                   ["dry-run",
@@ -988,12 +981,12 @@ def main():
         slurm_node_string = os.environ["SLURM_NODELIST"]
         logging.error("SLURM_NODELIST: %s", slurm_node_string)
 
-    if len(slurm_node_string) > 0:
+    if slurm_node_string:
         slurm_node_array = parse_slurm_node_string(slurm_node_string)
-    elif node_list is not None and len(node_list) > 0:
+    elif node_list:
         slurm_node_array = parse_slurm_node_string(node_list)
 
-    if slurm_node_array is None or len(slurm_node_array) == 0:
+    if not slurm_node_array:
         logging.error("no nodes specified")
         sys.exit(-1)
 
