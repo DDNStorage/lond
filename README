@@ -46,7 +46,7 @@ Mountpoint: /mnt/lustre
 ## SLURM integration
 We provide a slurm burstbuffer plugin named burstbuffer/lod to integrate LoD into SLURM
 
-Checkout DDN lod-dev branch of slurm (https://github.com/DDNStorage/slurm/tree/lod-dev) and build
+Checkout lod-dev branch of slurm (https://github.com/DDNStorage/slurm/tree/lod-dev) and build
 
 Enable lod burstbuffer plugin in slurm configuration (slurm.conf):
 

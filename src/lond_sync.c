@@ -1,7 +1,4 @@
 /*
- * Copyright (c) 2019, DDN Storage Corporation.
- */
-/*
  *
  * Sync dir from on-demand Lustre to globbal Lustre.
  *

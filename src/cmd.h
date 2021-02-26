@@ -1,7 +1,4 @@
 /*
- * Copyright (c) 2016, DDN Storage Corporation.
- */
-/*
  *
  * Head file for running command
  *

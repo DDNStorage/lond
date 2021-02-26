@@ -1,7 +1,4 @@
 /*
- * Copyright (c) 2019, DDN Storage Corporation.
- */
-/*
  *
  * Head file for Lustre on Demand
  *

@@ -1,7 +1,4 @@
 /*
- * Copyright (c) 2019, DDN Storage Corporation.
- */
-/*
  *
  * Tool for Lustre On Demand.
  *

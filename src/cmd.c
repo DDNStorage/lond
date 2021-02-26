@@ -1,7 +1,4 @@
 /*
- * Copyright (c) 2016, DDN Storage Corporation.
- */
-/*
  *
  * Tool for scanning the MDT and print list of matched files.
  *

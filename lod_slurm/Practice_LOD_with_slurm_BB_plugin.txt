@@ -2,7 +2,7 @@ There two parts here:
 Native LOD (lustre on demand)
 Slurm burst buffer plugin (named LOD)
 a. Apply lod support patch (burstbuff-add-lod.patch), and build
-b. Checkout DDN lod-dev branch of slurm (https://github.com/DDNStorage/slurm/tree/lod-dev) and build
+b. Checkout lod-dev branch of slurm (https://github.com/DDNStorage/slurm/tree/lod-dev) and build
 
 1. slurm configuration
 Enable lod bb plugin:
