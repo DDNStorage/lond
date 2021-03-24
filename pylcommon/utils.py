@@ -257,7 +257,7 @@ class CommandJob(object):
             tmp_data = []
             while select.select([pipe], [], [], 0)[0]:
                 tmp_data.append(os.read(pipe.fileno(), 1024))
-                if tmp_data[-1]:
+                if not tmp_data[-1]:
                     break
             data = "".join(tmp_data)
         else:
