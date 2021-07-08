@@ -21,7 +21,6 @@ License: GPLv2
 Group: Applications/System
 Source0: @PACKAGE@-%{version}.tar.gz
 BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
-Requires: clownfish-pylcommon
 Requires: lustre
 Provides: lond = %{version}-%{release}
 %if %{with systemd}
